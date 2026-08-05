@@ -92,7 +92,11 @@ class Regenerator
      *
      * @param string $directory
      *
-     * @return int
+     * @return int the file count, or -1 if the directory could not be read
+     *             (e.g. write+execute but no read permission - is_writable()
+     *             alone does not catch that). -1 is a sentinel, not a count:
+     *             0 is a legitimate "empty directory" result and callers must
+     *             be able to tell the two apart.
      */
     public static function countFiles($directory)
     {
@@ -100,18 +104,26 @@ class Regenerator
             return 0;
         }
 
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS)
-        );
+        try {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS)
+            );
 
-        $count = 0;
-        foreach ($iterator as $entry) {
-            if ($entry->isFile()) {
-                ++$count;
+            $count = 0;
+            foreach ($iterator as $entry) {
+                if ($entry->isFile()) {
+                    ++$count;
+                }
             }
-        }
 
-        return $count;
+            return $count;
+        } catch (\Exception $e) {
+            // RecursiveDirectoryIterator throws UnexpectedValueException when
+            // it cannot open the directory (e.g. is_writable() was true but
+            // the directory is not readable). This must never propagate: it
+            // is a filesystem permission fact, not a bug.
+            return -1;
+        }
     }
 
     /**
@@ -195,6 +207,12 @@ class Regenerator
             return;
         }
 
+        if (!is_readable($directory)) {
+            $report->addError(sprintf('Cannot read %s - check permissions.', $directory));
+
+            return;
+        }
+
         if (!is_writable($directory)) {
             $report->addError(sprintf('Cannot write to %s - check permissions.', $directory));
 
@@ -254,7 +272,17 @@ class Regenerator
             // writes back); a negative thumbnail count is nonsensical, so
             // clamp at 0 and let the source count carry the meaning.
             $filesAfter = self::countFiles($directory);
-            $report->addImages($sources, max(0, $filesAfter - $filesBefore));
+            if ($filesBefore === -1 || $filesAfter === -1) {
+                // The precheck above passed (directory looked readable at the
+                // time) but the count could not be taken anyway - report
+                // "no thumbnails counted" rather than doing arithmetic on a
+                // sentinel; $sources still tells the caller the domain was
+                // processed.
+                $thumbnails = 0;
+            } else {
+                $thumbnails = max(0, $filesAfter - $filesBefore);
+            }
+            $report->addImages($sources, $thumbnails);
         } finally {
             foreach ($this->isolation->stop() as $leaked) {
                 $report->addError($leaked);

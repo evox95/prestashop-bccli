@@ -92,3 +92,54 @@ bccli_assert_same(
 );
 
 bccli_regenerator_test_rrmdir($countFilesRoot);
+
+// A directory that is write+execute but NOT readable (0300): is_writable()
+// alone does not catch this, so countFiles() must guard the iterator itself
+// and return the -1 sentinel rather than letting the exception through.
+// Meaningless as root (uid 0 ignores permission bits), so skip there.
+if (function_exists('posix_geteuid') && posix_geteuid() !== 0) {
+    $unreadableDir = sys_get_temp_dir() . '/bccli-regenerator-test-unreadable-' . uniqid();
+    mkdir($unreadableDir, 0777, true);
+    file_put_contents($unreadableDir . '/hidden.jpg', 'x');
+    chmod($unreadableDir, 0300);
+
+    try {
+        bccli_assert_same(
+            -1,
+            Regenerator::countFiles($unreadableDir),
+            'an unreadable directory returns the -1 sentinel instead of throwing'
+        );
+    } finally {
+        // Restore read access before cleanup - rrmdir() needs to read the
+        // directory to delete its contents, and the whole point of this
+        // test is that 0300 makes that impossible.
+        chmod($unreadableDir, 0777);
+        bccli_regenerator_test_rrmdir($unreadableDir);
+    }
+} else {
+    echo "  SKIP: unreadable-directory test needs a non-root user to be meaningful\n";
+}
+
+// A path that is a file, not a directory, is caught by the existing is_dir()
+// guard - pinned explicitly since it is easy to break while touching this
+// code.
+$fileNotDir = sys_get_temp_dir() . '/bccli-regenerator-test-file-' . uniqid();
+file_put_contents($fileNotDir, 'x');
+bccli_assert_same(
+    0,
+    Regenerator::countFiles($fileNotDir),
+    'a path that is a file, not a directory, counts as zero'
+);
+unlink($fileNotDir);
+
+// A directory containing only subdirectories (no files of its own) must
+// count zero, not the number of directory entries.
+$onlyDirsRoot = sys_get_temp_dir() . '/bccli-regenerator-test-onlydirs-' . uniqid();
+mkdir($onlyDirsRoot . '/a/b', 0777, true);
+mkdir($onlyDirsRoot . '/c', 0777, true);
+bccli_assert_same(
+    0,
+    Regenerator::countFiles($onlyDirsRoot),
+    'a directory containing only subdirectories counts zero files'
+);
+bccli_regenerator_test_rrmdir($onlyDirsRoot);
