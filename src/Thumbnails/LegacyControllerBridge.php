@@ -25,6 +25,12 @@ namespace Bccli\Thumbnails;
  *     immediately, so core returns 'timeout' having written nothing.
  *  3. All the regeneration methods are protected.
  *
+ * Constructing the controller also runs core's own Controller::__construct(),
+ * which sets Context::getContext()->controller = $this (classes/controller/
+ * Controller.php:261). That is a real mutation of the global context, harmless
+ * for a single-shot CLI process but worth knowing if anything downstream reads
+ * Context::getContext()->controller during a run.
+ *
  * When these internals change in a future release, this file is the only one to
  * update.
  */
@@ -78,10 +84,37 @@ class LegacyControllerBridge
             }
         }
 
+        // Used by formatsFor(), sourceCountFor() and regenerateNoPictureImages().
+        foreach (array('ImageType', 'Image', 'Language') as $class) {
+            if (!class_exists($class)) {
+                throw new UnsupportedPlatformException(self::message('class ' . $class));
+            }
+        }
+
         // Present from PS 8.0 onwards, absent on 1.7. Only required when the
-        // controller declares the property that consumes it.
-        if ($reflection->hasProperty('imageFormatConfiguration') && !class_exists(self::FORMAT_CONFIG)) {
-            throw new UnsupportedPlatformException(self::message('class ' . self::FORMAT_CONFIG));
+        // controller declares the property that consumes it. Both classes are
+        // needed to build the replacement value (see injectImageFormatConfiguration()).
+        if ($reflection->hasProperty('imageFormatConfiguration')) {
+            if (!class_exists(self::FORMAT_CONFIG)) {
+                throw new UnsupportedPlatformException(self::message('class ' . self::FORMAT_CONFIG));
+            }
+            if (!class_exists(self::CONFIGURATION_ADAPTER)) {
+                throw new UnsupportedPlatformException(self::message('class ' . self::CONFIGURATION_ADAPTER));
+            }
+        }
+
+        // directoryFor() resolves these with constant(), which throws \Error - not
+        // catchable as an Exception - on an undefined constant. Verify every domain
+        // directory constant is defined before any caller can reach that path.
+        foreach (ImageDomain::allowedValues() as $domain) {
+            if ($domain === ImageDomain::ALL) {
+                continue;
+            }
+
+            $constantName = ImageDomain::constantFor($domain);
+            if (!defined($constantName)) {
+                throw new UnsupportedPlatformException(self::message('constant ' . $constantName));
+            }
         }
     }
 
@@ -205,13 +238,22 @@ class LegacyControllerBridge
     }
 
     /**
-     * Always pass the COMPLETE format list.
+     * For an unfiltered run, callers must pass the COMPLETE format list.
      *
      * _deleteOldImages() has a branch gated on "count($type) > 1"
      * (AdminImagesController.php:634) that removes orphaned thumbnails left
      * behind by image formats no longer configured. A single-element array
      * makes that branch dead, so --delete would keep the very files it exists
      * to reclaim.
+     *
+     * When a caller narrows $formats to one image type (e.g. an --image-type
+     * filter), the orphan-cleanup branch above goes dead on purpose: core's own
+     * back office does exactly the same thing. It computes $formats once per
+     * domain, filters it down to the chosen type when one is selected, and
+     * passes that same filtered array into _deleteOldImages()
+     * (AdminImagesController.php:934-948). Matching that is correct - diverging
+     * would make this command behave differently from the back office it
+     * mirrors. Do not special-case a filtered list here.
      *
      * @param string $domain
      * @param array  $formats
@@ -226,13 +268,22 @@ class LegacyControllerBridge
     }
 
     /**
-     * Always pass the COMPLETE format list.
+     * For an unfiltered run, callers must pass the COMPLETE format list.
      *
      * Core reassigns $image - the OUTER loop variable - inside the format loop
      * (AdminImagesController.php:706) when a category has a "_thumb" original.
      * The value leaks into every later format of the same call, which is the
      * behaviour the back office produces. Calling once per format resets it and
      * yields thumbnails built from a different source file.
+     *
+     * When a caller narrows $formats to one image type (e.g. an --image-type
+     * filter), passing the filtered list here still matches core: the back
+     * office computes $formats once per domain, filters it to the chosen type,
+     * and passes that same array into both _deleteOldImages() and
+     * _regenerateNewImages() in the same iteration
+     * (AdminImagesController.php:934-949). A filtered call therefore never hits
+     * the "_thumb" leak above, since there is nothing after the single format
+     * for it to leak into. Do not special-case a filtered list here.
      *
      * @param string $domain
      * @param array  $formats
@@ -289,11 +340,30 @@ class LegacyControllerBridge
     {
         $errors = array();
         foreach ((array) $this->controller->errors as $error) {
-            $errors[] = (string) $error;
+            $errors[] = self::stringifyError($error);
         }
 
         $this->controller->errors = array();
 
         return $errors;
+    }
+
+    /**
+     * A method whose only job is collecting error messages must not itself
+     * fail on one: (string) $error throws \Error for an object without
+     * __toString() and emits a notice for an array. Substitute a readable
+     * placeholder instead of ever throwing or warning here.
+     *
+     * @param mixed $error
+     *
+     * @return string
+     */
+    private static function stringifyError($error)
+    {
+        if (is_scalar($error) || (is_object($error) && method_exists($error, '__toString'))) {
+            return (string) $error;
+        }
+
+        return sprintf('[unreadable %s error]', is_object($error) ? get_class($error) : gettype($error));
     }
 }
