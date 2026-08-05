@@ -1,0 +1,245 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  detect-version:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.compare.outputs.bumped }}
+      version: ${{ steps.compare.outputs.version }}
+      previous: ${{ steps.compare.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Extract current and previous $version from bccli.php
+        id: compare
+        shell: bash
+        run: |
+          set -euo pipefail
+          extract() {
+            printf '%s' "$1" \
+              | grep -oE '\$this->version[[:space:]]*=[[:space:]]*'"'"'[^'"'"']+'"'"';' \
+              | sed -E "s/.*'([^']+)'.*/\1/" | head -n1
+          }
+          current="$(extract "$(cat bccli.php)")"
+          if [ -z "$current" ]; then
+            echo "::error::Could not extract \$this->version from bccli.php"
+            exit 1
+          fi
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            previous="$(extract "$(git show HEAD~1:bccli.php 2>/dev/null || true)")"
+          else
+            previous=""
+          fi
+          previous="${previous:-none}"
+          echo "Current version : $current"
+          echo "Previous version: $previous"
+          {
+            echo "version=$current"
+            echo "previous=$previous"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$current" != "$previous" ]; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Version bumped from $previous to $current"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No version change ($current). Nothing to release."
+          fi
+
+      - name: Guard - tag must not already exist
+        if: steps.compare.outputs.bumped == 'true'
+        env:
+          VERSION: ${{ steps.compare.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::Tag ${tag} already exists on origin. Bump the version or delete the stale tag."
+            exit 1
+          fi
+
+  test:
+    name: Test - PHP ${{ matrix.php }}
+    needs: detect-version
+    if: needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        php: ['7.4', '8.1', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, json, gd
+          tools: none
+
+      - name: Unit tests
+        run: php tests/run-unit.php
+
+  build:
+    name: Build module ZIP
+    needs: [detect-version, test]
+    if: needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      zip-name: ${{ steps.zip.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: mbstring, json
+          tools: none
+
+      # The module has no runtime dependencies and its autoloader is committed,
+      # because PrestaShop modules are installed by unzipping into modules/
+      # where nobody runs "composer install". tools/build-zip.sh is the same
+      # script maintainers run locally, so CI and local builds cannot drift.
+      - name: Build the ZIP
+        run: bash tools/build-zip.sh
+
+      - name: Name and verify the artifact
+        id: zip
+        env:
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="bccli-${VERSION}.zip"
+          zip="dist/${name}"
+          if [ ! -f "$zip" ]; then
+            echo "::error::Expected ${zip}; build-zip.sh produced: $(ls dist/ 2>/dev/null || echo nothing)"
+            exit 1
+          fi
+
+          # PrestaShop's installer requires exactly one top-level directory,
+          # named after the module.
+          tops="$(unzip -Z1 "$zip" | cut -d/ -f1 | sort -u)"
+          if [ "$tops" != "bccli" ]; then
+            echo "::error::ZIP must contain exactly one top-level dir 'bccli', found: ${tops}"
+            exit 1
+          fi
+
+          # The committed autoloader must ship, or the unzipped module is dead.
+          if ! unzip -Z1 "$zip" | grep -qx 'bccli/vendor/autoload.php'; then
+            echo "::error::bccli/vendor/autoload.php missing from the ZIP"
+            exit 1
+          fi
+
+          # Development files must not.
+          if unzip -Z1 "$zip" | grep -qE '^bccli/(tests|docs|tools|\.github|\.superpowers)/'; then
+            echo "::error::Development files leaked into the ZIP:"
+            unzip -Z1 "$zip" | grep -E '^bccli/(tests|docs|tools|\.github|\.superpowers)/'
+            exit 1
+          fi
+
+          ls -lh "$zip"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test the packaged module
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          unzip -q "dist/${{ steps.zip.outputs.name }}" -d "$work"
+          # Prove the shipped autoloader resolves the module's own classes
+          # without composer install - the exact situation on a real shop.
+          # Only classes with no PrestaShop dependency can be instantiated
+          # outside a shop. RegenerateThumbnailsCommand extends Symfony's
+          # Command, which PrestaShop provides, so it is checked by file
+          # presence rather than by loading it.
+          php -r '
+            require "'"$work"'/bccli/vendor/autoload.php";
+            $classes = array(
+              "Bccli\\Thumbnails\\ImageDomain",
+              "Bccli\\Thumbnails\\Regenerator",
+              "Bccli\\Thumbnails\\RegenerationReport",
+              "Bccli\\Thumbnails\\RunLock",
+              "Bccli\\Thumbnails\\OutputIsolation",
+              "Bccli\\Thumbnails\\LegacyControllerBridge",
+            );
+            foreach ($classes as $class) {
+              if (!class_exists($class)) {
+                fwrite(STDERR, "autoloader cannot resolve $class\n");
+                exit(1);
+              }
+            }
+            $shopBound = "'"$work"'/bccli/src/Command/RegenerateThumbnailsCommand.php";
+            if (!is_file($shopBound)) {
+              fwrite(STDERR, "the command class is missing from the package\n");
+              exit(1);
+            }
+            echo "packaged autoloader resolves ", count($classes), " classes\n";
+          '
+          rm -rf "$work"
+
+      - name: Upload module ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: dist/${{ steps.zip.outputs.name }}
+          retention-days: 90
+
+  release:
+    name: Publish GitHub Release
+    needs: [detect-version, test, build]
+    if: needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download module ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: module-zip
+          path: dist
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        env:
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          out="dist/release-notes.md"
+          awk -v ver="$VERSION" '
+            BEGIN { capture = 0 }
+            /^## / {
+              if (capture == 1) { exit }
+              if ($0 ~ ("^## \\[?" ver)) { capture = 1; next }
+            }
+            capture == 1 { print }
+          ' CHANGELOG.md > "$out"
+          if [ ! -s "$out" ]; then
+            printf 'Release **%s**.\n\nNo CHANGELOG entry was found for this version - add a `## [%s]` section to CHANGELOG.md.\n' "$VERSION" "$VERSION" > "$out"
+          fi
+          echo '--- release notes ---'
+          cat "$out"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.detect-version.outputs.version }}
+          name: bccli v${{ needs.detect-version.outputs.version }}
+          body_path: dist/release-notes.md
+          draft: false
+          prerelease: ${{ contains(needs.detect-version.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          files: dist/${{ needs.build.outputs.zip-name }}
