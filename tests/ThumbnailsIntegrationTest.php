@@ -127,6 +127,27 @@ if ($source === null) {
 }
 bccli_assert($source !== null, 'a category source image is available');
 
+// Core's no-picture step needs a per-language source: it looks for
+// "<iso>.jpg" in the domain directory and, failing that, falls back to
+// _PS_PRODUCT_IMG_DIR_ . "<default-iso>.jpg" (AdminImagesController.php:846-849).
+// A freshly installed shop ships neither, so ImageManager::resize() fails and
+// core correctly reports "Cannot write No picture image". That is core
+// signalling missing fixture data, not a module defect - so provide the
+// fallback when it is absent, and remove it again afterwards.
+$noPictureFallback = null;
+$defaultIso = Language::getIsoById((int) Configuration::get('PS_LANG_DEFAULT'));
+if ($defaultIso) {
+    $fallbackPath = _PS_PRODUCT_IMG_DIR_ . $defaultIso . '.jpg';
+    if (!file_exists($fallbackPath)) {
+        $placeholder = imagecreatetruecolor(200, 200);
+        imagefill($placeholder, 0, 0, imagecolorallocate($placeholder, 230, 230, 230));
+        imagejpeg($placeholder, $fallbackPath, 90);
+        imagedestroy($placeholder);
+        $noPictureFallback = $fallbackPath;
+        echo "  NOTE: no \"no picture\" source in this shop - created {$defaultIso}.jpg for the test\n";
+    }
+}
+
 if ($source !== null) {
     $id = basename($source, '.jpg');
     $victim = $directory . $id . '-' . $formats[0]['name'] . '.jpg';
@@ -165,6 +186,10 @@ if ($source !== null) {
             unlink($residue);
         }
     }
+}
+
+if ($noPictureFallback !== null && file_exists($noPictureFallback)) {
+    unlink($noPictureFallback);
 }
 
 // --- a missing directory fails loudly, never silently succeeds ------------
