@@ -73,6 +73,8 @@ class RegenerateThumbnailsCommand extends Command
         // their destination with no temporary file, so overlapping runs can
         // corrupt each other. A second cron firing while the first still runs is
         // normal operation, so it exits 0 in silence rather than mailing an error.
+        // This early return must stay outside the try/finally below: it never
+        // acquired the lock, so it must never call release().
         $lock = new RunLock($this->lockPath());
         if (!$lock->acquire()) {
             if ($output->isVerbose()) {
@@ -82,77 +84,116 @@ class RegenerateThumbnailsCommand extends Command
             return 0;
         }
 
+        // Everything from here on holds the lock, so it all runs inside one
+        // try/finally that releases it exactly once on every exit path
+        // (success, validation failure, or an unexpected exception).
         try {
-            LegacyControllerBridge::assertSupported();
-            $bridge = new LegacyControllerBridge();
-        } catch (UnsupportedPlatformException $e) {
-            $errorOutput->writeln($e->getMessage());
-            $lock->release();
+            try {
+                LegacyControllerBridge::assertSupported();
+                $bridge = new LegacyControllerBridge();
+            } catch (UnsupportedPlatformException $e) {
+                // Message printed at VERBOSITY_QUIET so a -q run does not turn a
+                // real failure into a silent exit 1 - see the class docblock's
+                // cron contract.
+                $errorOutput->writeln($e->getMessage(), OutputInterface::VERBOSITY_QUIET);
 
-            return 1;
-        }
+                return 1;
+            }
 
-        // CLI has no execution limit of its own, but core compares elapsed time
-        // against its own max_execution_time property, which the bridge sets.
-        @set_time_limit(0);
+            // CLI has no execution limit of its own, but core compares elapsed
+            // time against its own max_execution_time property, which the
+            // bridge sets. set_time_limit() is commonly present in
+            // disable_functions on shared hosting; calling a disabled function
+            // throws \Error on PHP 8, which "@" cannot suppress (it only
+            // silences diagnostics, not thrown errors), so the call must be
+            // guarded explicitly.
+            if (function_exists('set_time_limit')) {
+                @set_time_limit(0);
+            }
 
-        $image = (string) $input->getArgument('image');
-        $domains = ImageDomain::isValid($image) ? ImageDomain::domainsFor($image) : array();
+            $image = (string) $input->getArgument('image');
+            $domains = ImageDomain::isValid($image) ? ImageDomain::domainsFor($image) : array();
 
-        $progress = null;
-        if ($output->isVerbose() && $domains !== array()) {
-            $output->writeln(sprintf('Regenerating thumbnails: %s', $image));
-            $progress = new ProgressBar($output, count($domains));
-            $progress->start();
-        }
+            $progress = null;
+            if ($output->isVerbose() && $domains !== array()) {
+                $output->writeln(sprintf('Regenerating thumbnails: %s', $image));
+                $progress = new ProgressBar($output, count($domains));
+                $progress->start();
+            }
 
-        $started = microtime(true);
+            $started = microtime(true);
 
-        try {
-            $report = (new Regenerator($bridge, new OutputIsolation()))->run(
-                $image,
-                $input->getArgument('image-type'),
-                (bool) $input->getOption('delete'),
-                function () use ($progress) {
+            try {
+                try {
+                    $report = (new Regenerator($bridge, new OutputIsolation()))->run(
+                        $image,
+                        $input->getArgument('image-type'),
+                        (bool) $input->getOption('delete'),
+                        function () use ($progress) {
+                            if ($progress !== null) {
+                                $progress->advance();
+                            }
+                        }
+                    );
+                } finally {
+                    // Always leaves the bar finished and newline-terminated
+                    // before anything else writes to $errorOutput, on every
+                    // path - success or exception. Without this, a message
+                    // written from a catch below would land glued onto a
+                    // half-drawn bar instead of on its own line.
+                    //
+                    // The newline must go to $errorOutput, not $output:
+                    // Symfony's ProgressBar redirects itself to
+                    // getErrorOutput() whenever it is given a
+                    // ConsoleOutputInterface (so redraws never pollute piped
+                    // stdout), so the bar's actual stream is $errorOutput,
+                    // not $output - confirmed by capturing stdout/stderr
+                    // separately, which shows every redraw landing on
+                    // stderr. $errorOutput already collapses to $output for
+                    // a plain OutputInterface (see its definition above),
+                    // so this is correct on both paths.
                     if ($progress !== null) {
-                        $progress->advance();
+                        $progress->finish();
+                        $errorOutput->writeln('');
+                        $progress = null;
                     }
                 }
-            );
-        } catch (\InvalidArgumentException $e) {
-            $errorOutput->writeln($e->getMessage());
+            } catch (\InvalidArgumentException $e) {
+                $errorOutput->writeln($e->getMessage(), OutputInterface::VERBOSITY_QUIET);
+
+                return 1;
+            } catch (\Exception $e) {
+                $errorOutput->writeln('Unable to regenerate thumbnails: ' . $e->getMessage(), OutputInterface::VERBOSITY_QUIET);
+
+                return 1;
+            }
+
+            foreach ($report->errors() as $error) {
+                $errorOutput->writeln($error, OutputInterface::VERBOSITY_QUIET);
+            }
+
+            if ($output->isVerbose()) {
+                $errorCount = count($report->errors());
+
+                $output->writeln(sprintf(
+                    "\nDone: %d source images, %d thumbnails, %d %s%s (%d s)",
+                    $report->sourceCount(),
+                    $report->thumbnailCount(),
+                    $errorCount,
+                    $errorCount === 1 ? 'error' : 'errors',
+                    // markInterrupted() adds its own message via addError(), so an
+                    // interrupted run's error count already includes it; flag it
+                    // explicitly rather than let a bare count imply something more
+                    // mundane happened.
+                    $report->wasInterrupted() ? ' (interrupted)' : '',
+                    (int) round(microtime(true) - $started)
+                ));
+            }
+
+            return $report->exitCode();
+        } finally {
             $lock->release();
-
-            return 1;
-        } catch (\Exception $e) {
-            $errorOutput->writeln('Unable to regenerate thumbnails: ' . $e->getMessage());
-            $lock->release();
-
-            return 1;
         }
-
-        if ($progress !== null) {
-            $progress->finish();
-            $output->writeln('');
-        }
-
-        foreach ($report->errors() as $error) {
-            $errorOutput->writeln($error);
-        }
-
-        if ($output->isVerbose()) {
-            $output->writeln(sprintf(
-                "\nDone: %d source images, %d thumbnails, %d errors (%d s)",
-                $report->sourceCount(),
-                $report->thumbnailCount(),
-                count($report->errors()),
-                (int) round(microtime(true) - $started)
-            ));
-        }
-
-        $lock->release();
-
-        return $report->exitCode();
     }
 
     /**
@@ -160,8 +201,17 @@ class RegenerateThumbnailsCommand extends Command
      */
     private function lockPath()
     {
-        $directory = defined('_PS_CACHE_DIR_') ? _PS_CACHE_DIR_ : sys_get_temp_dir();
+        if (defined('_PS_CACHE_DIR_')) {
+            return rtrim(_PS_CACHE_DIR_, '/') . '/bccli-thumbnails.lock';
+        }
 
-        return rtrim($directory, '/') . '/bccli-thumbnails.lock';
+        // _PS_CACHE_DIR_ is defined by config/defines.inc.php before any
+        // command can run, so this branch is unreachable in practice - but an
+        // unqualified name here would let two separate installations sharing
+        // a temp directory collide on the same lock file, so the install root
+        // is folded into the name anyway.
+        $name = 'bccli-thumbnails-' . md5(defined('_PS_ROOT_DIR_') ? _PS_ROOT_DIR_ : __DIR__) . '.lock';
+
+        return rtrim(sys_get_temp_dir(), '/') . '/' . $name;
     }
 }
