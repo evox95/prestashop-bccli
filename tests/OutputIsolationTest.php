@@ -97,6 +97,7 @@ bccli_assert_same(1, count($captured), 'the premature close is reported as a dia
 // error handler would otherwise silently absorb it and let execution continue
 // past what should be a hard stop, so it must be rethrown as a RuntimeException
 // instead - letting a caller's try/finally unwind and report a real failure.
+$baseLevel = ob_get_level();
 $isolation = new OutputIsolation();
 $isolation->start();
 $threw = false;
@@ -115,3 +116,55 @@ bccli_assert(
     'the rethrown exception carries the original message'
 );
 bccli_assert_same(1, count($captured), 'the fatal error is still recorded as a captured diagnostic');
+bccli_assert_same(
+    $baseLevel,
+    ob_get_level(),
+    'stop() still unwinds its own output buffer when reached via a caught rethrow'
+);
+
+// A non-removable/non-cleanable output buffer (e.g. an ill-behaved module calling
+// ob_start($callback, 0, 0)) makes ob_get_clean() fail without moving the buffer
+// level. Before the unwind loop tracked progress this spun stop() forever - the
+// CLI SAPI has no execution time limit. It must instead return promptly, report
+// the buffer it could not close, and still restore display_errors. The important
+// assertion here is simply that stop() returns at all: if the guard regresses,
+// this test hangs rather than fails.
+$beforeDisplayErrors = ini_get('display_errors');
+$baseLevel = ob_get_level();
+$isolation = new OutputIsolation();
+$isolation->start();
+ob_start(function ($buffer) {
+    return $buffer;
+}, 0, 0); // flags=0: not CLEANABLE, not FLUSHABLE, not REMOVABLE
+echo 'trapped in a non-removable buffer';
+
+$captured = $isolation->stop();
+
+$combined = implode("\n", $captured);
+bccli_assert(
+    strpos($combined, 'non-removable') !== false,
+    'a non-removable output buffer that could not be closed is reported as a diagnostic'
+);
+bccli_assert_same(
+    $beforeDisplayErrors,
+    ini_get('display_errors'),
+    'display_errors is still restored even when a buffer could not be closed'
+);
+
+// Best-effort cleanup so the runner is not left holding an extra buffer level for
+// the rest of the process. A buffer created with flags=0 cannot actually be closed
+// from user code (ob_end_clean()/ob_get_clean() fail against it exactly like
+// stop()'s own attempt above), so this loop is bounded and simply gives up if nothing
+// changes - matching the same no-progress guard used in the class itself. If it
+// cannot be closed, its content flushes on its own at process shutdown, after the
+// test summary line; that is expected noise from this one deliberately-hostile
+// buffer, not a defect.
+$cleanupAttempts = 0;
+while (ob_get_level() > $baseLevel && $cleanupAttempts < 8) {
+    $levelBeforeCleanup = ob_get_level();
+    @ob_end_clean();
+    ++$cleanupAttempts;
+    if (ob_get_level() >= $levelBeforeCleanup) {
+        break;
+    }
+}

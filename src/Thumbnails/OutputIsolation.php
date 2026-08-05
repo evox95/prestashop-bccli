@@ -19,10 +19,12 @@ namespace Bccli\Thumbnails;
  *
  * Hooked module code runs inside the isolated span (via that hook) and is not
  * required to be well-behaved: it may open its own output buffer and never
- * close it, or close the one this class opened. stop() therefore tracks the
- * exact buffer level start() left the stack at and unwinds relative to that
- * level rather than assuming its own buffer is still on top - see stop() for
- * the two failure modes this guards against.
+ * close it, close the one this class opened, or open one that cannot be
+ * closed at all (e.g. ob_start($callback, 0, 0), which is neither cleanable
+ * nor removable). stop() therefore tracks the exact buffer level start() left
+ * the stack at, unwinds relative to that level rather than assuming its own
+ * buffer is still on top, and requires each pop to make progress before
+ * continuing - see stop() for the failure modes this guards against.
  *
  * A trigger_error(..., E_USER_ERROR) (or E_RECOVERABLE_ERROR) inside the span
  * would normally halt execution. Because a custom error handler suppresses
@@ -104,16 +106,49 @@ class OutputIsolation
             // opened, not just the top of the stack - a hooked module may have left
             // its own buffer(s) open above it. Buffers are popped innermost first, so
             // collect chunks in pop order and reverse them back into write order.
+            //
+            // Progress is a precondition of continuing: a non-removable/non-cleanable
+            // buffer (e.g. ob_start($callback, 0, 0)) makes ob_get_clean() fail
+            // without moving the level, which would otherwise spin forever - the CLI
+            // SAPI has no execution time limit. A small iteration cap is a second,
+            // unconditional guard against any other edge case that keeps the level
+            // moving but never actually reaches $this->bufferLevel.
             $chunks = array();
+            $maxIterations = 64;
+            $iterations = 0;
+            $incomplete = false;
+
             while (ob_get_level() >= $this->bufferLevel) {
+                if ($iterations >= $maxIterations) {
+                    $this->captured[] = 'OutputIsolation: gave up unwinding output buffers '
+                        . 'after ' . $maxIterations . ' iterations (buffer level still '
+                        . ob_get_level() . ')';
+                    $incomplete = true;
+                    break;
+                }
+
+                $levelBeforePop = ob_get_level();
                 $chunk = ob_get_clean();
+                ++$iterations;
+
+                if (ob_get_level() >= $levelBeforePop) {
+                    // ob_get_clean() failed to close this buffer (it lacks the
+                    // CLEANABLE/REMOVABLE flags) and the level did not move. Stop
+                    // unwinding here instead of retrying forever.
+                    $this->captured[] = 'OutputIsolation: a non-removable output buffer '
+                        . 'at level ' . $levelBeforePop . ' could not be closed and was '
+                        . 'left open';
+                    $incomplete = true;
+                    break;
+                }
+
                 if (is_string($chunk) && $chunk !== '') {
                     $chunks[] = $chunk;
                 }
             }
             $buffered = implode("\n", array_reverse($chunks));
 
-            if ($leakedLevels > 0) {
+            if (!$incomplete && $leakedLevels > 0) {
                 $this->captured[] = 'OutputIsolation: wrapped code left ' . $leakedLevels
                     . ' output buffer(s) open (unbalanced ob_start())';
             }
