@@ -1,0 +1,46 @@
+name: tests
+
+on: [push, pull_request]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['7.4', '8.0', '8.1']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+      - run: php tests/run-unit.php
+
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        prestashop: ['8.0', '8.1', '8.2']
+    services:
+      mysql:
+        image: mariadb:10.6
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: prestashop
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="healthcheck.sh --connect"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start PrestaShop ${{ matrix.prestashop }}
+        run: |
+          docker run -d --name ps --network host \
+            -e DB_SERVER=127.0.0.1 -e DB_USER=root -e DB_PASSWD=root \
+            -e PS_INSTALL_AUTO=1 -e PS_DEV_MODE=0 \
+            prestashop/prestashop:${{ matrix.prestashop }}
+          timeout 600 bash -c \
+            'until docker exec ps test -f /var/www/html/config/settings.inc.php; do sleep 5; done'
+      - name: Install the module and run the suite
+        run: |
+          docker cp . ps:/var/www/html/modules/bccli
+          docker exec ps php /var/www/html/modules/bccli/tests/run-integration.php
