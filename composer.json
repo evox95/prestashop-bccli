@@ -1,0 +1,28 @@
+{
+    "name": "bestcoding/bccli",
+    "description": "CLI commands for PrestaShop 8.x",
+    "license": "MIT",
+    "type": "prestashop-module",
+    "authors": [
+        {
+            "name": "Mateusz Bartocha",
+            "email": "contact@bestcoding.net",
+            "homepage": "https://bestcoding.net"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Bccli\\": "src/"
+        },
+        "classmap": ["bccli.php"]
+    },
+    "config": {
+        "preferred-install": "dist",
+        "optimize-autoloader": true,
+        "prepend-autoloader": false
+    },
+    "scripts": {
+        "test": "php tests/run-unit.php",
+        "test:integration": "php tests/run-integration.php"
+    }
+}
