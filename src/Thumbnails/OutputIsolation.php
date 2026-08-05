@@ -34,7 +34,13 @@ namespace Bccli\Thumbnails;
  * has no way to see engine fatals or parse errors - those never reach a
  * registered error handler - so this containment is necessarily partial.
  *
- * Everything captured here is reported as an error instead of being printed.
+ * Everything captured here is reported as an error instead of being printed -
+ * except what error_reporting() would already exclude, or what the caller
+ * suppressed with "@". Core suppresses several calls deliberately because
+ * their failure is expected and harmless on some shops (e.g. three "@unlink"
+ * calls and an "@chmod" in ImageManager.php, an "@exif_read_data" in
+ * AdminImagesController.php); capturing those anyway would turn an ordinary,
+ * successful run into a false failure.
  */
 class OutputIsolation
 {
@@ -62,6 +68,19 @@ class OutputIsolation
 
         $captured = &$this->captured;
         set_error_handler(function ($severity, $message, $file, $line) use (&$captured) {
+            if (!(error_reporting() & $severity)) {
+                // Suppressed by "@" (error_reporting() reads 0 for the duration of the
+                // suppressed expression on PHP 7, a reduced bitmask on PHP 8) or excluded
+                // by the caller's own error_reporting() setting. Core relies on "@" being
+                // honoured - ImageManager.php and AdminImagesController.php both suppress
+                // calls that are expected to fail on some shops (chmod, exif_read_data,
+                // unlink) - so a handler that captured regardless of this would flip a
+                // successful, merely-noisy run into a false failure. This must run before
+                // the fatal-severity rethrow below too, so a suppressed E_USER_ERROR is
+                // also left alone rather than turned into an exception.
+                return true;
+            }
+
             $captured[] = sprintf('%s (%s:%d)', $message, $file, $line);
 
             if ($severity === E_USER_ERROR || $severity === E_RECOVERABLE_ERROR) {

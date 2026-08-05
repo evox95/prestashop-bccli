@@ -151,6 +151,39 @@ bccli_assert_same(
     'display_errors is still restored even when a buffer could not be closed'
 );
 
+// An "@"-suppressed diagnostic inside the span must not be captured. PHP lowers
+// error_reporting() to 0 for the duration of an "@"-suppressed expression (PHP 7)
+// or to a reduced bitmask (PHP 8); the handler must honour that instead of
+// capturing regardless, or a shop where e.g. "@chmod" legitimately fails would
+// have a successful run reported as a failure.
+$isolation = new OutputIsolation();
+$isolation->start();
+@trigger_error('suppressed via @', E_USER_WARNING);
+$captured = $isolation->stop();
+bccli_assert_same(array(), $captured, 'an @-suppressed warning captures nothing');
+
+// A diagnostic excluded by the caller's own error_reporting() setting must not be
+// captured either - the handler must defer to error_reporting(), not override it.
+// error_reporting() is saved and restored so this test cannot change the level for
+// anything that runs after it.
+$previousErrorReporting = error_reporting();
+error_reporting(E_ALL & ~E_USER_NOTICE);
+$isolation = new OutputIsolation();
+$isolation->start();
+trigger_error('excluded by error_reporting()', E_USER_NOTICE);
+$captured = $isolation->stop();
+error_reporting($previousErrorReporting);
+bccli_assert_same(array(), $captured, 'a notice excluded by error_reporting() is not captured');
+
+// Regression guard for the two tests above: an ORDINARY, un-suppressed notice
+// running at the caller's normal error_reporting() level must still be captured -
+// proving the fix defers to error_reporting()/"@" rather than silencing everything.
+$isolation = new OutputIsolation();
+$isolation->start();
+trigger_error('ordinary notice', E_USER_NOTICE);
+$captured = $isolation->stop();
+bccli_assert_same(1, count($captured), 'an ordinary un-suppressed notice is still captured');
+
 // Best-effort cleanup so the runner is not left holding an extra buffer level for
 // the rest of the process. A buffer created with flags=0 cannot actually be closed
 // from user code (ob_end_clean()/ob_get_clean() fail against it exactly like
