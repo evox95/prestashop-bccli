@@ -110,7 +110,22 @@ foreach (scandir($directory, SCANDIR_SORT_NONE) as $entry) {
         break;
     }
 }
-bccli_assert($source !== null, 'the shop has at least one category source image');
+
+// A freshly installed shop has no category images at all, so the suite cannot
+// assume one exists - it failed exactly that way on a clean CI install. Create
+// a throwaway source image instead, and remember to remove it afterwards, so
+// the test is independent of whatever fixtures the shop happens to carry.
+$createdSource = false;
+if ($source === null) {
+    $source = '999901.jpg';
+    $image = imagecreatetruecolor(400, 400);
+    imagefill($image, 0, 0, imagecolorallocate($image, 200, 120, 60));
+    imagejpeg($image, $directory . $source, 90);
+    imagedestroy($image);
+    $createdSource = true;
+    echo "  NOTE: no category source image in this shop - created {$source} for the test\n";
+}
+bccli_assert($source !== null, 'a category source image is available');
 
 if ($source !== null) {
     $id = basename($source, '.jpg');
@@ -141,6 +156,15 @@ if ($source !== null) {
     }
 
     bccli_restore_ownership($directory, $categoryOwnership);
+
+    // Remove the throwaway source and every thumbnail regeneration derived
+    // from it, so a shop that had no category images is left with none.
+    if ($createdSource) {
+        $id = basename($source, '.jpg');
+        foreach (glob($directory . $id . '*') as $residue) {
+            unlink($residue);
+        }
+    }
 }
 
 // --- a missing directory fails loudly, never silently succeeds ------------
