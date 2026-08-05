@@ -252,9 +252,16 @@ Since this module's stated goal is interface parity with PS 9.1, it follows PS 9
 semantics and applies `<image-type>` for `all` too. This is the one place where
 the module intentionally differs from the PS 8 back office; the README says so.
 
-An unknown or non-numeric `<image-type>`, or one that matches no format in the
-selected domain, is rejected during validation rather than silently regenerating
-nothing.
+An unknown or non-numeric `<image-type>` is rejected during validation, as is one
+that matches no format in **any** domain of the run.
+
+Under `all`, a format ID valid for only some domains is accepted and the domains
+lacking it are skipped silently. That matches PrestaShop 9, whose handler builds
+`['id' => $imageTypeId, $imageDomain->value => 1]` per domain and simply iterates
+an empty result set when the domain has no such format — it raises nothing
+(verified in `RegenerateThumbnailsHandler` on 9.1.4). This module is stricter than
+PS 9 in one respect: an ID valid nowhere in the run exits 1 rather than exiting 0
+having done nothing.
 
 ## Execution flow
 
