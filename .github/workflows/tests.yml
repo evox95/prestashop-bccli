@@ -33,14 +33,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Start PrestaShop ${{ matrix.prestashop }}
+        env:
+          PS_VERSION: ${{ matrix.prestashop }}
         run: |
+          set -euo pipefail
           docker run -d --name ps --network host \
             -e DB_SERVER=127.0.0.1 -e DB_USER=root -e DB_PASSWD=root \
             -e PS_INSTALL_AUTO=1 -e PS_DEV_MODE=0 \
-            prestashop/prestashop:${{ matrix.prestashop }}
-          timeout 600 bash -c \
-            'until docker exec ps test -f /var/www/html/config/settings.inc.php; do sleep 5; done'
+            "prestashop/prestashop:${PS_VERSION}"
+
+          # Do NOT wait on config/settings.inc.php: in PrestaShop 8 that file
+          # ships inside the image as a 23-byte "@deprecated 1.7" stub, so it
+          # exists before the installer has done anything. Waiting on it made
+          # the suite start against an empty database and fail in
+          # Shop::initialize(). Wait for a table the installer creates instead.
+          timeout 900 bash -c '
+            until docker exec ps php -r "
+              \$p = \"/var/www/html/app/config/parameters.php\";
+              if (!is_file(\$p)) { exit(1); }
+              \$c = require \$p;
+              \$c = \$c[\"parameters\"];
+              try {
+                \$pdo = new PDO(
+                  \"mysql:host=\" . \$c[\"database_host\"] . \";dbname=\" . \$c[\"database_name\"],
+                  \$c[\"database_user\"], \$c[\"database_password\"]
+                );
+                \$t = \$c[\"database_prefix\"] . \"shop\";
+                exit(\$pdo->query(\"SELECT 1 FROM \$t LIMIT 1\") ? 0 : 1);
+              } catch (Throwable \$e) { exit(1); }
+            " 2>/dev/null; do sleep 5; done
+          '
+          echo "PrestaShop is installed and reachable."
+
       - name: Install the module and run the suite
         run: |
+          set -euo pipefail
           docker cp . ps:/var/www/html/modules/bccli
           docker exec ps php /var/www/html/modules/bccli/tests/run-integration.php
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs --tail 80 ps
