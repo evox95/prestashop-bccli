@@ -32,12 +32,12 @@ class Regenerator
      * @param array    $formats     image type rows from core
      * @param int      $imageTypeId 0 means every format
      *
-     * @return array filtered rows, reindexed
+     * @return array filtered rows, reindexed from 0
      */
     public static function filterFormats(array $formats, $imageTypeId)
     {
         if ((int) $imageTypeId === 0) {
-            return $formats;
+            return array_values($formats);
         }
 
         $selected = array();
@@ -77,6 +77,41 @@ class Regenerator
         }
 
         return (int) $raw;
+    }
+
+    /**
+     * Counts regular files under a directory, recursively.
+     *
+     * Most domains are a single flat directory, but the product tree
+     * (_PS_PRODUCT_IMG_DIR_) nests images several levels deep (e.g.
+     * img/p/1/4/14-home_default.jpg), so a flat scandir() would miss almost
+     * everything there. One recursive walk handles both cases; recursing a
+     * flat directory is harmless.
+     *
+     * Pure and static so it is testable without PrestaShop loaded.
+     *
+     * @param string $directory
+     *
+     * @return int
+     */
+    public static function countFiles($directory)
+    {
+        if (!is_dir($directory)) {
+            return 0;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS)
+        );
+
+        $count = 0;
+        foreach ($iterator as $entry) {
+            if ($entry->isFile()) {
+                ++$count;
+            }
+        }
+
+        return $count;
     }
 
     /**
@@ -172,6 +207,7 @@ class Regenerator
         }
 
         $sources = $this->bridge->sourceCountFor($domain);
+        $filesBefore = self::countFiles($directory);
 
         $this->isolation->start();
         try {
@@ -208,7 +244,17 @@ class Regenerator
             }
             $this->collect($report);
 
-            $report->addImages($sources, $sources * count($formats));
+            // Core only writes a thumbnail when it does not already exist
+            // (AdminImagesController.php:714), so counting sources * formats
+            // counts files that were already there as if this run had just
+            // produced them - highest exactly when a run (e.g. a repeated
+            // cron run) did the least work. Count what actually changed on
+            // disk instead. With --delete the delta can go negative (an
+            // unfiltered delete can remove more than a filtered regenerate
+            // writes back); a negative thumbnail count is nonsensical, so
+            // clamp at 0 and let the source count carry the meaning.
+            $filesAfter = self::countFiles($directory);
+            $report->addImages($sources, max(0, $filesAfter - $filesBefore));
         } finally {
             foreach ($this->isolation->stop() as $leaked) {
                 $report->addError($leaked);
