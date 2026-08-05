@@ -1,0 +1,5 @@
+services:
+    bccli.command.regenerate_thumbnails:
+        class: Bccli\Command\RegenerateThumbnailsCommand
+        tags:
+            - { name: 'console.command' }

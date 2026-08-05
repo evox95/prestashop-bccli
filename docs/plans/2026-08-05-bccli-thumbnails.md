@@ -1395,7 +1395,17 @@ try {
 }'
 ```
 
-Expected: either `supported` or a `guard fired:` line — **never** a PHP fatal error.
+Expected on PS 9.1: `guard fired: Unsupported PrestaShop 9.1.4: class
+AdminImagesController not found.` — **never** a PHP fatal error.
+
+Verified: `AdminImagesController` does **not exist** on PrestaShop 9.1.4 (the
+controller was removed when the logic moved to `Adapter\ImageThumbnailsRegenerator`
++ CQRS). This is the guard's real negative path, not a hypothetical one.
+
+It is also unreachable in normal operation: on PS 9 the command's `isEnabled()`
+returns false because core ships `PrestaShopBundle\Command\RegenerateThumbnailsCommand`,
+so Symfony never runs the command and the bridge is never constructed. The guard
+is defence in depth for the case where someone instantiates the bridge directly.
 
 - [ ] **Step 5: Commit**
 
