@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# License: Academic Free License version 3.0 (AFL-3.0)
 set -euo pipefail
 
 VERSION="$(grep -oP "(?<=\\\$this->version = ')[^']+" bccli.php)"

@@ -159,4 +159,4 @@ vulnerability.
 
 ## Licence
 
-MIT — see [`LICENSE`](LICENSE).
+AFL-3.0 — see [`LICENSE`](LICENSE).

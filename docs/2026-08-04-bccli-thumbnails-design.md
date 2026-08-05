@@ -24,7 +24,7 @@ thumbnails):
 
 ## Goal
 
-Ship a free, MIT-licensed PrestaShop module on GitHub that backports the PS 9.1
+Ship a free, AFL-3.0-licensed PrestaShop module on GitHub that backports the PS 9.1
 command to PS 8.x, so thumbnail regeneration can run from the command line
 without a time limit and can be scheduled from cron.
 
@@ -493,11 +493,12 @@ committed autoloader is a few small generated files, not a vendored tree.
 
 ## Release
 
-- Public GitHub repository, **MIT** licence: `LICENSE` at root plus a one-line
-  SPDX header (`// SPDX-License-Identifier: MIT`) in each PHP file, rather than
-  a full boilerplate block in every file
-- Copyright holder: `Copyright (c) 2026 Mateusz Bartocha <contact@bestcoding.net>`
-  — used in `LICENSE`, in `composer.json` `authors`, and as the module's `author`
+- Public GitHub repository, **AFL-3.0** licence (the PrestaShop ecosystem
+  convention): `LICENSE` at root plus a PrestaShop-style NOTICE OF LICENSE
+  docblock naming Mateusz Bartocha in each PHP file
+- Copyright holder: `Mateusz Bartocha <contact@bestcoding.net>`
+  — named in the per-file NOTICE OF LICENSE docblocks, in `composer.json`
+  `authors`, and as the module's `author`
 - README states: the problem, the PHP and PrestaShop requirements, installation,
   cron examples, the CI-tested version matrix, that PS 9 already has this command
   natively, and that the module is not distributed via the Addons marketplace
