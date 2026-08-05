@@ -17,6 +17,21 @@ namespace Bccli\Thumbnails;
  *  - ImageManager::resize() fires the actionOnImageResizeAfter hook, so any
  *    third-party module hooked there can echo freely.
  *
+ * Hooked module code runs inside the isolated span (via that hook) and is not
+ * required to be well-behaved: it may open its own output buffer and never
+ * close it, or close the one this class opened. stop() therefore tracks the
+ * exact buffer level start() left the stack at and unwinds relative to that
+ * level rather than assuming its own buffer is still on top - see stop() for
+ * the two failure modes this guards against.
+ *
+ * A trigger_error(..., E_USER_ERROR) (or E_RECOVERABLE_ERROR) inside the span
+ * would normally halt execution. Because a custom error handler suppresses
+ * that default behaviour, this class re-throws it as a RuntimeException so a
+ * caller's try/finally still unwinds and the run is reported as a real
+ * failure instead of continuing past what should have been a hard stop. It
+ * has no way to see engine fatals or parse errors - those never reach a
+ * registered error handler - so this containment is necessarily partial.
+ *
  * Everything captured here is reported as an error instead of being printed.
  */
 class OutputIsolation
@@ -29,6 +44,9 @@ class OutputIsolation
 
     /** @var bool */
     private $active = false;
+
+    /** @var int output buffer level right after start() opens its own buffer */
+    private $bufferLevel = 0;
 
     public function start()
     {
@@ -44,11 +62,19 @@ class OutputIsolation
         set_error_handler(function ($severity, $message, $file, $line) use (&$captured) {
             $captured[] = sprintf('%s (%s:%d)', $message, $file, $line);
 
+            if ($severity === E_USER_ERROR || $severity === E_RECOVERABLE_ERROR) {
+                // Normally fatal. A custom error handler would otherwise silently
+                // swallow it and let execution continue past what should be a hard
+                // stop, so turn it back into one via an exception.
+                throw new \RuntimeException($message);
+            }
+
             // Returning true stops PHP from also writing this to the output.
             return true;
         });
 
         ob_start();
+        $this->bufferLevel = ob_get_level();
         $this->active = true;
     }
 
@@ -61,7 +87,38 @@ class OutputIsolation
             return array();
         }
 
-        $buffered = ob_get_clean();
+        $currentLevel = ob_get_level();
+        $buffered = '';
+
+        if ($currentLevel < $this->bufferLevel) {
+            // Wrapped code already closed the buffer start() opened (and possibly a
+            // caller's buffer above it). Do not touch the stack any further - calling
+            // ob_get_clean() now would pop a buffer this instance never opened.
+            $this->captured[] = 'OutputIsolation: the isolated output buffer was closed by '
+                . 'wrapped code before stop() ran (expected buffer level ' . $this->bufferLevel
+                . ', found ' . $currentLevel . ')';
+        } else {
+            $leakedLevels = $currentLevel - $this->bufferLevel;
+
+            // Unwind everything down to (and including) the buffer this instance
+            // opened, not just the top of the stack - a hooked module may have left
+            // its own buffer(s) open above it. Buffers are popped innermost first, so
+            // collect chunks in pop order and reverse them back into write order.
+            $chunks = array();
+            while (ob_get_level() >= $this->bufferLevel) {
+                $chunk = ob_get_clean();
+                if (is_string($chunk) && $chunk !== '') {
+                    $chunks[] = $chunk;
+                }
+            }
+            $buffered = implode("\n", array_reverse($chunks));
+
+            if ($leakedLevels > 0) {
+                $this->captured[] = 'OutputIsolation: wrapped code left ' . $leakedLevels
+                    . ' output buffer(s) open (unbalanced ob_start())';
+            }
+        }
+
         restore_error_handler();
 
         if ($this->previousDisplayErrors !== false) {
@@ -70,7 +127,7 @@ class OutputIsolation
 
         $this->active = false;
 
-        if (is_string($buffered) && trim($buffered) !== '') {
+        if (trim($buffered) !== '') {
             $this->captured[] = 'Unexpected output from PrestaShop: ' . trim($buffered);
         }
 
