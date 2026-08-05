@@ -2,9 +2,83 @@
 // SPDX-License-Identifier: MIT
 declare(strict_types=1);
 
+/*
+ * What this suite pins, and what it does not.
+ *
+ * Pinned by the assertions below: a healthy run actually writes a missing
+ * thumbnail; a missing or unwritable directory fails loudly instead of
+ * silently exiting 0; core's error list is read once and cleared rather than
+ * left to latch across domains; invalid domain/type arguments are rejected
+ * before any work; a corrupt source image never leaks a stray PHP notice
+ * onto stdout; no-picture placeholders are refreshed for a non-product
+ * domain.
+ *
+ * NOT pinned here - protected only by the design review already recorded in
+ * LegacyControllerBridge::regenerateNewImages() and ::deleteOldImages(): that
+ * core is called ONCE per domain with the complete filtered format list,
+ * never once per format. That choice is what makes an --image-type filter
+ * match the back office's own filtered behaviour (no per-format "_thumb"
+ * leak) instead of the back office's unfiltered behaviour (leak). A green
+ * run of this suite does not prove that invariant holds - it was verified by
+ * reading core's source, not by a byte comparison here, because reproducing
+ * it safely would mean mutating every source image in a shared domain
+ * directory. Do not assume a green suite covers it.
+ */
+
 use Bccli\Thumbnails\LegacyControllerBridge;
 use Bccli\Thumbnails\OutputIsolation;
 use Bccli\Thumbnails\Regenerator;
+
+/**
+ * The container this suite runs against executes PHP as root, so any file
+ * core rewrites - even one that already existed - is re-owned to root. The
+ * shop then works (bytes match) but is subtly broken for the web server,
+ * which does not run as root. Snapshot every file's owner/group in a domain
+ * directory before mutating anything in it, so it can be restored precisely
+ * afterward with bccli_restore_ownership().
+ *
+ * @param string $directory
+ *
+ * @return array<string, array{0: int|false, 1: int|false}>
+ */
+function bccli_snapshot_ownership($directory)
+{
+    $snapshot = array();
+    if (!is_dir($directory)) {
+        return $snapshot;
+    }
+    foreach (scandir($directory, SCANDIR_SORT_NONE) as $entry) {
+        $path = $directory . $entry;
+        if (is_file($path)) {
+            $snapshot[$entry] = array(fileowner($path), filegroup($path));
+        }
+    }
+
+    return $snapshot;
+}
+
+/**
+ * chown()/chgrp() require root to change a file to an owner other than the
+ * current user, and this process is not root when the suite runs outside the
+ * container. Guard explicitly rather than let a permission warning leak into
+ * the output isolation this suite is itself testing.
+ *
+ * @param string $directory
+ * @param array<string, array{0: int|false, 1: int|false}> $snapshot
+ */
+function bccli_restore_ownership($directory, array $snapshot)
+{
+    if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
+        return;
+    }
+    foreach ($snapshot as $entry => $ids) {
+        $path = $directory . $entry;
+        if (is_file($path)) {
+            chown($path, $ids[0]);
+            chgrp($path, $ids[1]);
+        }
+    }
+}
 
 $bridge = new LegacyControllerBridge();
 
@@ -26,6 +100,12 @@ if ($source !== null) {
     $id = basename($source, '.jpg');
     $victim = $directory . $id . '-' . $formats[0]['name'] . '.jpg';
     $backup = $victim . '.bak';
+
+    // Core rewrites every no-picture placeholder in this directory
+    // unconditionally, not just the one file deleted below - snapshot the
+    // whole directory before mutating anything in it.
+    $categoryOwnership = bccli_snapshot_ownership($directory);
+
     if (file_exists($victim)) {
         copy($victim, $backup);
         unlink($victim);
@@ -43,6 +123,8 @@ if ($source !== null) {
         copy($backup, $victim);
         unlink($backup);
     }
+
+    bccli_restore_ownership($directory, $categoryOwnership);
 }
 
 // --- a missing directory fails loudly, never silently succeeds ------------
@@ -65,6 +147,8 @@ if ($moved) {
 
     rename($movedDir, $suppliersDir);
     bccli_assert(is_dir($suppliersDir), 'the suppliers directory is restored');
+} else {
+    echo "  SKIP: suppliers directory not found or could not be renamed away\n";
 }
 
 // --- an unwritable directory fails loudly ---------------------------------
@@ -85,6 +169,8 @@ if (function_exists('posix_geteuid') && posix_geteuid() !== 0) {
         );
 
         chmod($storesDir, $originalMode);
+    } else {
+        echo "  SKIP: stores directory not found\n";
     }
 } else {
     echo "  SKIP: permission test requires a non-root user\n";
@@ -94,9 +180,22 @@ if (function_exists('posix_geteuid') && posix_geteuid() !== 0) {
 // Core returns "(bool) count($this->errors)" - the whole array - so without
 // clearing between calls a single early failure marks every later domain as
 // failed and suppresses core's own post-processing.
-$bridge->takeErrors();
-$before = $bridge->takeErrors();
-bccli_assert_same(array(), $before, 'takeErrors clears core error state');
+// By this point in the suite, core's real error list already happens to be
+// empty, so a takeErrors() that forgot to clear would pass a bare "second
+// call returns []" check too. Seed a known error via reflection first, so
+// both the read and the clear are actually pinned.
+$controllerProperty = new ReflectionProperty($bridge, 'controller');
+$controllerProperty->setAccessible(true);
+$controller = $controllerProperty->getValue($bridge);
+
+$seededErrors = array('bccli integration test sentinel error');
+$controller->errors = $seededErrors;
+
+$firstDrain = $bridge->takeErrors();
+bccli_assert_same($seededErrors, $firstDrain, 'takeErrors returns the seeded error');
+
+$secondDrain = $bridge->takeErrors();
+bccli_assert_same(array(), $secondDrain, 'takeErrors clears core error state');
 
 // --- invalid arguments are rejected before any work -----------------------
 $threw = false;
@@ -121,6 +220,9 @@ bccli_assert($threw, 'a non-numeric image type is rejected');
 $corrupt = $directory . '999999.jpg';
 file_put_contents($corrupt, "\xFF");
 
+// Another full domain run - core rewrites every no-picture placeholder again.
+$corruptOwnership = bccli_snapshot_ownership($directory);
+
 ob_start();
 $report = (new Regenerator($bridge, new OutputIsolation()))->run('categories', null, false);
 $leaked = ob_get_clean();
@@ -131,6 +233,8 @@ unlink($corrupt);
 foreach (glob($directory . '999999-*') as $residue) {
     unlink($residue);
 }
+
+bccli_restore_ownership($directory, $corruptOwnership);
 
 // --- the no-picture step runs for a non-product domain --------------------
 // Core calls _regenerateNoPictureImages() outside the products branch, so
@@ -150,6 +254,7 @@ if (is_dir($manufacturerDir) && $manufacturerFormats !== array() && $activeLangu
 
     if (file_exists($placeholder)) {
         $backup = $placeholder . '.bak';
+        $manufacturerOwnership = bccli_snapshot_ownership($manufacturerDir);
         copy($placeholder, $backup);
         unlink($placeholder);
 
@@ -157,9 +262,16 @@ if (is_dir($manufacturerDir) && $manufacturerFormats !== array() && $activeLangu
 
         bccli_assert(file_exists($placeholder), 'no-picture placeholders are regenerated for manufacturers');
 
-        if (!file_exists($placeholder)) {
-            copy($backup, $placeholder);
-        }
+        // Unconditional, matching the categories restoration: regeneration is
+        // not guaranteed byte-identical, so always restore from the backup
+        // rather than only when the assertion above already failed.
+        copy($backup, $placeholder);
         unlink($backup);
+
+        bccli_restore_ownership($manufacturerDir, $manufacturerOwnership);
+    } else {
+        echo "  SKIP: no default-language manufacturer placeholder to test\n";
     }
+} else {
+    echo "  SKIP: manufacturers no-picture test preconditions not met\n";
 }
