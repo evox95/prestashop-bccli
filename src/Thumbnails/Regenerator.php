@@ -10,7 +10,7 @@ namespace Bccli\Thumbnails;
  * Drives one regeneration run: one pass per image domain.
  *
  * The call order mirrors AdminImagesController::_regenerateThumbnails()
- * (lines 927-969) rather than inventing one. Note that core calls the watermark
+ * (lines 928-968) rather than inventing one. Note that core calls the watermark
  * step inside "if ($proc['type'] == 'products')" but the no-picture step
  * OUTSIDE it, so placeholder images are refreshed for every domain.
  */

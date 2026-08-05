@@ -40,8 +40,16 @@ class LegacyControllerBridge
     const FORMAT_CONFIG = 'PrestaShop\\PrestaShop\\Core\\Image\\ImageFormatConfiguration';
     const CONFIGURATION_ADAPTER = 'PrestaShop\\PrestaShop\\Adapter\\Configuration';
 
-    /** Large enough that core's guard never trips; CLI has no real limit. */
-    const NO_TIME_LIMIT = 86400;
+    /**
+     * Core's timeout guard is "time() - start_time > max_execution_time - 4"
+     * (AdminImagesController.php:745, 813, 904); PHP_INT_MAX - 4 is as close to
+     * "this guard never trips" as an int comparison can get, which is the
+     * actual intent - the CLI has no real limit of its own. An earlier, smaller
+     * value here (86400, one day) still left the guard tripping after
+     * 23h59m56s of continuous runtime, which no run should ever approach but
+     * was not actually "never".
+     */
+    const NO_TIME_LIMIT = \PHP_INT_MAX;
 
     /** @var \AdminImagesController */
     private $controller;
@@ -281,7 +289,7 @@ class LegacyControllerBridge
      * office computes $formats once per domain, filters it to the chosen type,
      * and passes that same array into both _deleteOldImages() and
      * _regenerateNewImages() in the same iteration
-     * (AdminImagesController.php:934-949). A filtered call therefore never hits
+     * (AdminImagesController.php:934-950). A filtered call therefore never hits
      * the "_thumb" leak above, since there is nothing after the single format
      * for it to leak into. Do not special-case a filtered list here.
      *

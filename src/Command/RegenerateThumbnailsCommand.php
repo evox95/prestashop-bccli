@@ -123,6 +123,8 @@ class RegenerateThumbnailsCommand extends Command
 
             $started = microtime(true);
 
+            $succeeded = false;
+
             try {
                 try {
                     $report = (new Regenerator($bridge, new OutputIsolation()))->run(
@@ -135,25 +137,30 @@ class RegenerateThumbnailsCommand extends Command
                             }
                         }
                     );
+                    $succeeded = true;
                 } finally {
-                    // Always leaves the bar finished and newline-terminated
-                    // before anything else writes to $errorOutput, on every
-                    // path - success or exception. Without this, a message
-                    // written from a catch below would land glued onto a
-                    // half-drawn bar instead of on its own line.
+                    // Always leaves the bar newline-terminated before anything else
+                    // writes to $errorOutput, on every path - success or exception.
+                    // Without this, a message written from a catch below would land
+                    // glued onto a half-drawn bar instead of on its own line.
                     //
-                    // The newline must go to $errorOutput, not $output:
-                    // Symfony's ProgressBar redirects itself to
-                    // getErrorOutput() whenever it is given a
-                    // ConsoleOutputInterface (so redraws never pollute piped
-                    // stdout), so the bar's actual stream is $errorOutput,
-                    // not $output - confirmed by capturing stdout/stderr
-                    // separately, which shows every redraw landing on
-                    // stderr. $errorOutput already collapses to $output for
-                    // a plain OutputInterface (see its definition above),
-                    // so this is correct on both paths.
+                    // finish() itself is called only on success: it jumps the bar to
+                    // 100% (ProgressBar::finish() calls setProgress($this->max)),
+                    // which would misrepresent an interrupted run as complete right
+                    // above the error message explaining that it was not.
+                    //
+                    // The newline must go to $errorOutput, not $output: Symfony's
+                    // ProgressBar redirects itself to getErrorOutput() whenever it is
+                    // given a ConsoleOutputInterface (so redraws never pollute piped
+                    // stdout), so the bar's actual stream is $errorOutput, not
+                    // $output - confirmed by capturing stdout/stderr separately,
+                    // which shows every redraw landing on stderr. $errorOutput
+                    // already collapses to $output for a plain OutputInterface (see
+                    // its definition above), so this is correct on both paths.
                     if ($progress !== null) {
-                        $progress->finish();
+                        if ($succeeded) {
+                            $progress->finish();
+                        }
                         $errorOutput->writeln('');
                         $progress = null;
                     }
@@ -163,6 +170,18 @@ class RegenerateThumbnailsCommand extends Command
 
                 return 1;
             } catch (\Exception $e) {
+                $errorOutput->writeln('Unable to regenerate thumbnails: ' . $e->getMessage(), OutputInterface::VERBOSITY_QUIET);
+
+                return 1;
+            } catch (\Throwable $e) {
+                // \Error (e.g. a TypeError raised inside core) is not an \Exception,
+                // so the catch above does not see it; left uncaught it would surface
+                // as a raw, unhandled PHP fatal instead of the documented "stderr
+                // message, exit 1" contract. \Throwable must be caught after
+                // \Exception, not before or instead of it: \Exception does not
+                // extend \Throwable's sibling \Error, but both implement
+                // \Throwable, so an earlier \Throwable arm would swallow the
+                // \Exception case above too and this arm would never run.
                 $errorOutput->writeln('Unable to regenerate thumbnails: ' . $e->getMessage(), OutputInterface::VERBOSITY_QUIET);
 
                 return 1;

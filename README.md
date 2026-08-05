@@ -1,9 +1,13 @@
 # bccli
 
+Backports PrestaShop 9's `prestashop:thumbnails:regenerate` console command to
+PrestaShop 8.x, so large catalogues can finish regenerating image thumbnails
+without hitting a web request's execution time limit.
+
 A console command for PrestaShop 8.x that regenerates product, category,
 manufacturer, supplier and store image thumbnails — the same job as
 **Design → Images → Regenerate thumbnails** in the back office, run from the
-command line instead, with no execution time limit.
+command line instead.
 
 ## The problem
 
@@ -29,7 +33,7 @@ across an 8 → 9 upgrade.
 
 - PrestaShop 8.0, 8.1 or 8.2 — these are the versions tested in CI. Other 8.x
   point releases are expected to work but are not verified.
-- PHP 7.1 or later.
+- PHP 7.2.5 or later - PrestaShop 8.0's own minimum supported PHP version.
 
 **PrestaShop 9.x already ships this command natively.** Installing bccli
 there is harmless — the module detects the native command and withdraws its
@@ -90,9 +94,14 @@ stderr and exits `1`, whether or not `-v` or `-q` was passed. With `-v`, a
 successful run shows a progress bar (on stderr) and a one-line summary (on
 stdout); nothing about the silence guarantee changes for failures.
 
-If another regeneration is already running, a second invocation exits `0`
-having done nothing — that is normal operation for two overlapping cron
-firings, not an error, and it does not generate mail either.
+Overlapping bccli runs are prevented on a best-effort basis: if another bccli
+regeneration is already running, a second invocation exits `0` having done
+nothing — that is normal operation for two overlapping cron firings, not an
+error, and it does not generate mail either. The lock only excludes other
+bccli runs, not a back office regeneration started at the same time, and it
+is skipped entirely (the run proceeds unlocked) if the lock file itself
+cannot be created — an unwritable cache directory must not block a
+legitimate run.
 
 ### Cron example
 
@@ -136,6 +145,11 @@ are documented here so they are not mistaken for one.
 - **Every resize writes a `fileType` marker file** into the destination
   directory, alongside the thumbnail itself. This is core behaviour
   (`ImageManager`), not something this module adds or can suppress.
+- **`--delete` opens a window with no thumbnails at all.** Existing files are
+  removed before regeneration starts, not swapped in atomically, so anything
+  reading a thumbnail between the two steps sees it missing until the run
+  reaches that domain. This is core's own delete-then-regenerate behaviour,
+  not specific to running it from the CLI.
 
 ## Development
 

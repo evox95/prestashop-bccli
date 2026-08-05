@@ -40,10 +40,13 @@ that root-vs-non-root gap first.
 
 ## PHP 7.1 syntax floor
 
-All PHP in this repository must run on PHP 7.1. That is PrestaShop 8.0's
-minimum supported PHP version (this module supports PrestaShop 8.0–8.2), so
-targeting anything newer would break installations on the oldest supported
-combination. Concretely, this rules out:
+All PHP in this repository must run on PHP 7.1, one minor version below
+PrestaShop 8.0's actual minimum supported PHP version, 7.2.5 (this module
+supports PrestaShop 8.0–8.2 and requires 7.2.5+ at runtime - see the
+Requirements section of `README.md`). The lower syntax floor is a deliberate
+choice, not a requirement: keeping the source itself 7.1-compatible leaves the
+door open to a future PrestaShop 1.7 port, which does run on 7.1. Concretely,
+this rules out:
 
 - typed properties (PHP 7.4)
 - arrow functions (PHP 7.4)

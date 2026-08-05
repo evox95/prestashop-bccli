@@ -7,15 +7,21 @@
 namespace Bccli\Thumbnails;
 
 /**
- * Exclusive lock preventing two regeneration runs from overlapping.
+ * Best-effort exclusive lock preventing two bccli regeneration runs from
+ * overlapping.
  *
  * PrestaShop core has no locking, and thumbnails are written straight to their
  * destination rather than to a temporary file plus rename(), so two concurrent
- * runs - a cron firing while the previous one is still going, or a run during a
- * back office regeneration - can leave truncated or missing files.
+ * bccli runs - e.g. a cron firing while the previous one is still going - can
+ * leave truncated or missing files. This lock only ever excludes OTHER bccli
+ * invocations sharing the same lock file; it has no way to detect, and does
+ * not guard against, a back office regeneration running at the same time.
  *
  * The handle is held for the process lifetime; the operating system releases it
- * if the process dies, so a stale lock file cannot wedge future runs.
+ * if the process dies, so a stale lock file cannot wedge future runs. It is a
+ * best-effort optimisation, not a correctness guarantee: acquire() returns
+ * true (proceed unlocked) when the lock file cannot even be opened, since an
+ * unwritable cache directory must not block a legitimate run.
  */
 class RunLock
 {
