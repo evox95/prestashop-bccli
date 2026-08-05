@@ -101,6 +101,13 @@ $bridge = new LegacyControllerBridge();
 // --- regeneration actually writes the missing thumbnail -------------------
 $directory = $bridge->directoryFor('categories');
 $formats = $bridge->formatsFor('categories');
+// No image formats means the shop is not fully installed - regeneration has
+// nothing to generate. Skip loudly rather than reporting a cascade of failures
+// that all trace back to this one missing precondition.
+if (count($formats) === 0) {
+    echo "  SKIP: this shop defines no category image formats - regeneration has nothing to do\n";
+    return;
+}
 bccli_assert(count($formats) > 0, 'the shop defines at least one category format');
 
 $source = null;

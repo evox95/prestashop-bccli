@@ -42,11 +42,19 @@ jobs:
             -e PS_INSTALL_AUTO=1 -e PS_DEV_MODE=0 \
             "prestashop/prestashop:${PS_VERSION}"
 
-          # Do NOT wait on config/settings.inc.php: in PrestaShop 8 that file
-          # ships inside the image as a 23-byte "@deprecated 1.7" stub, so it
-          # exists before the installer has done anything. Waiting on it made
-          # the suite start against an empty database and fail in
-          # Shop::initialize(). Wait for a table the installer creates instead.
+          # Two readiness signals that look right and are not:
+          #
+          #  - config/settings.inc.php: in PrestaShop 8 it ships inside the
+          #    image as a 23-byte "@deprecated 1.7" stub, so it exists before
+          #    the installer starts. Waiting on it ran the suite against an
+          #    empty database, failing in Shop::initialize().
+          #  - the ps_shop table: created early, while the installer is still
+          #    populating everything else. The suite then found no image
+          #    formats and no fixtures.
+          #
+          # Wait for ps_image_type to be POPULATED instead: it is the last of
+          # the tables this suite depends on, and it is what regeneration
+          # actually reads.
           timeout 900 bash -c '
             until docker exec ps php -r "
               \$p = \"/var/www/html/app/config/parameters.php\";
@@ -58,12 +66,21 @@ jobs:
                   \"mysql:host=\" . \$c[\"database_host\"] . \";dbname=\" . \$c[\"database_name\"],
                   \$c[\"database_user\"], \$c[\"database_password\"]
                 );
-                \$t = \$c[\"database_prefix\"] . \"shop\";
-                exit(\$pdo->query(\"SELECT 1 FROM \$t LIMIT 1\") ? 0 : 1);
+                \$t = \$c[\"database_prefix\"] . \"image_type\";
+                \$n = \$pdo->query(\"SELECT COUNT(*) FROM \$t\")->fetchColumn();
+                exit(\$n > 0 ? 0 : 1);
               } catch (Throwable \$e) { exit(1); }
             " 2>/dev/null; do sleep 5; done
           '
-          echo "PrestaShop is installed and reachable."
+          # The installer writes its last records and then finishes housekeeping;
+          # give it a moment so the suite never races the tail of the install.
+          sleep 15
+          echo "PrestaShop is installed: $(docker exec ps php -r '
+            \$c = require "/var/www/html/app/config/parameters.php";
+            \$c = \$c["parameters"];
+            \$pdo = new PDO("mysql:host=" . \$c["database_host"] . ";dbname=" . \$c["database_name"], \$c["database_user"], \$c["database_password"]);
+            echo \$pdo->query("SELECT COUNT(*) FROM " . \$c["database_prefix"] . "image_type")->fetchColumn(), " image formats";
+          ')"
 
       - name: Install the module and run the suite
         run: |
