@@ -63,10 +63,45 @@ try {
 }
 bccli_assert(!$threw, 'assertSupported() does not throw on a real PrestaShop install');
 
+// --- the manager can actually resolve its repository -------------------------
+// Deliberately its own assertion, separate from and before every other one in
+// this file. FeatureFlagManager::repository() reaches
+// PrestaShopBundle\Entity\Repository\FeatureFlagRepository through one of two
+// independent mechanisms: by its own service id - public on PrestaShop 8.2+,
+// where it is registered directly under that id (confirmed by reading
+// src/PrestaShopBundle/Resources/config/services/bundle/repository.yml on
+// PrestaShop's own 8.2.7 tag) - or, when that id is not registered at all
+// (PrestaShop 8.0/8.1: the identical repository is instead registered only
+// under a different id, prestashop.core.admin.feature_flag.repository -
+// confirmed by reading the same file on the 8.0.5 tag), by asking
+// doctrine.orm.entity_manager for it instead. class_exists() alone (what
+// assertSupported() above checks) cannot see this gap - the entity and
+// repository classes ship on every 8.x either way - only actually asking the
+// container can, which is exactly what shipped broken in 1.1.0: PrestaShop
+// 8.0 CI failed with a raw ServiceNotFoundException that aborted this whole
+// file before a single assertion below ran, unreproducible locally because
+// the only shop reachable for manual verification runs 8.2.7. This assertion
+// turns any future drift in either service id into one readable failure
+// naming which mechanism was expected, instead of a stack trace that kills
+// the run.
+global $kernel;
+$repositoryMechanism = $kernel->getContainer()->has(FeatureFlagManager::REPOSITORY_SERVICE)
+    ? 'service id "' . FeatureFlagManager::REPOSITORY_SERVICE . '"'
+    : ($kernel->getContainer()->has('doctrine.orm.entity_manager')
+        ? 'doctrine.orm.entity_manager fallback'
+        : 'neither the service id nor doctrine.orm.entity_manager is available');
+
 $manager = new FeatureFlagManager();
+$threw = false;
+$flags = array();
+try {
+    $flags = $manager->listFlags();
+} catch (UnsupportedPlatformException $e) {
+    $threw = true;
+}
+bccli_assert(!$threw, 'FeatureFlagManager resolves its repository (expected mechanism: ' . $repositoryMechanism . ')');
 
 // --- list returns the real, seeded flags ------------------------------------
-$flags = $manager->listFlags();
 bccli_assert(!empty($flags), 'listFlags() returns at least one flag on a real install');
 
 $flagsByName = array();

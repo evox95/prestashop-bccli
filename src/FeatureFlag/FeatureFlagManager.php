@@ -20,16 +20,34 @@
 namespace Bccli\FeatureFlag;
 
 /**
- * Talks to PrestaShop 8.2's real feature flag stack.
+ * Talks to PrestaShop 8.x's real feature flag stack.
  *
  * PrestaShopBundle\Entity\Repository\FeatureFlagRepository (Doctrine) is the
  * same repository core's own back office uses - confirmed by reading
  * PrestaShopBundle\Controller\Admin\Configure\AdvancedParameters\FeatureFlagController
  * and PrestaShopBundle\Form\Admin\AdvancedParameters\FeatureFlagsFormDataProvider,
  * and by fetching it live from a running PrestaShop 8.2.7 container, where it
- * returned the same 14 rows / names the ps_feature_flag table holds. It is
- * registered as a public service, so it can be resolved directly; nothing
+ * returned the same 14 rows / names the ps_feature_flag table holds. Nothing
  * here reads or writes ps_feature_flag with raw SQL.
+ *
+ * How that repository is reached is NOT the same across 8.x, which is the
+ * whole reason repository() below tries two mechanisms instead of one.
+ * Confirmed by reading src/PrestaShopBundle/Resources/config/services/bundle/
+ * repository.yml at both PrestaShop's own 8.0.5 and 8.2.7 tags: on 8.2.7 the
+ * repository is registered directly under its own FQCN as a public service
+ * id (and separately wired as a constructor argument of
+ * PrestaShopBundle\Routing\Converter\LegacyRouteFactory in routing.yml,
+ * which alone would already be enough to make it resolvable); on 8.0.5 the
+ * identical repository - same class, same Doctrine mapping - is instead
+ * registered only under a different id,
+ * prestashop.core.admin.feature_flag.repository, with no service registered
+ * under the FQCN at all. The entity/repository classes themselves ship on
+ * both versions (class_exists() is true on either), so assertSupported()
+ * below cannot see this gap - only actually asking the container for the
+ * service id can. This shipped broken in 1.1.0: PrestaShop 8.0 CI failed
+ * with ServiceNotFoundException at exactly the direct $container->get() call
+ * repository() used to make, unreproducible locally because the only
+ * reachable shop for manual verification runs 8.2.7.
  *
  * getByName() returns null rather than throwing on an unknown name, and
  * enable()/disable() silently no-op when the flag does not exist (verified by
@@ -159,13 +177,61 @@ class FeatureFlagManager
     }
 
     /**
+     * Reaches PrestaShopBundle\Entity\Repository\FeatureFlagRepository
+     * through whichever of two mechanisms the running container actually
+     * exposes, preferring the cheaper/more direct one.
+     *
+     * 1. self::REPOSITORY_SERVICE by its own service id - public on
+     *    PrestaShop 8.2+ (confirmed by reading services/bundle/
+     *    repository.yml on the 8.2.7 tag: `public: true` on the id itself).
+     * 2. Otherwise, doctrine.orm.entity_manager's getRepository(). This
+     *    reaches the identical object: the repository.yml service above is
+     *    itself only a thin factory around
+     *    `$entityManager->getRepository(FeatureFlag::class)` (its own
+     *    `factory: [ '@doctrine.orm.default_entity_manager', getRepository
+     *    ]` line) - the real routing is PrestaShopBundle\Entity\FeatureFlag's
+     *    own `@ORM\Entity(repositoryClass=...)` mapping, which
+     *    getRepository() consults either way. doctrine.orm.entity_manager
+     *    is public on every PrestaShop 8.x this module targets - confirmed
+     *    by reading doctrine/doctrine-bundle 2.6.3's own
+     *    DoctrineExtension::load() (the exact version PrestaShop 8.0.5 pins
+     *    in its own composer.lock):
+     *    `$container->getAlias('doctrine.orm.entity_manager')->
+     *    setPublic(true)`, unconditional, not gated on any PrestaShop-side
+     *    config. This is the path PrestaShop 8.0/8.1 actually need: their
+     *    own repository.yml registers this repository only under a
+     *    different id, prestashop.core.admin.feature_flag.repository, never
+     *    under the FQCN self::REPOSITORY_SERVICE names (confirmed by
+     *    reading the same file on the 8.0.5 tag) - relying on that other id
+     *    instead would only trade one undocumented-internal-id dependency
+     *    for another, with no more of a stability guarantee.
+     *
+     * $container->has() rather than a try/get()/catch: has() reports
+     * whether a service is actually reachable through the public API
+     * (false for a private-only or altogether unregistered id) without
+     * ever risking a raw ServiceNotFoundException escaping from get() -
+     * exactly the exception this module must never surface to a user.
+     *
      * @return object PrestaShopBundle\Entity\Repository\FeatureFlagRepository
      *
      * @throws UnsupportedPlatformException
      */
     private function repository()
     {
-        return $this->kernel()->getContainer()->get(self::REPOSITORY_SERVICE);
+        $container = $this->kernel()->getContainer();
+
+        if ($container->has(self::REPOSITORY_SERVICE)) {
+            return $container->get(self::REPOSITORY_SERVICE);
+        }
+
+        if ($container->has('doctrine.orm.entity_manager')) {
+            return $container->get('doctrine.orm.entity_manager')->getRepository(self::ENTITY_CLASS);
+        }
+
+        throw new UnsupportedPlatformException(
+            'Neither the ' . self::REPOSITORY_SERVICE . ' service nor doctrine.orm.entity_manager '
+            . 'is available in this container - prestashop:feature-flag cannot run here.'
+        );
     }
 
     /**
@@ -359,6 +425,20 @@ class FeatureFlagManager
      * register_shutdown_function() deferral needed: verified live at
      * ~0.02s per call, no exception, and safe under the same
      * four-consecutive-toggle reproduction that broke both earlier attempts.
+     *
+     * Unlike self::REPOSITORY_SERVICE (see repository()'s own docblock),
+     * this id does not need a fallback: cache.app_clearer is also public on
+     * PrestaShop 8.0/8.1, not just the 8.2.7 this was verified live against.
+     * Confirmed by reading the actual vendored FrameworkBundle version those
+     * releases pin - PrestaShop 8.0.5's own composer.lock locks
+     * symfony/symfony to v4.4.50, and that exact tag's
+     * src/Symfony/Bundle/FrameworkBundle/Resources/config/cache.xml still
+     * has `<service id="cache.app_clearer" alias="cache.default_clearer"
+     * public="true" />` - the same registration line, same attribute, as
+     * 8.2.7 vendors. No $container->has() guard needed here for that
+     * reason; a raw get() failure on this id would mean something more
+     * fundamental about the container than a PrestaShop-version-specific
+     * service-registration drift.
      *
      * @throws \Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException
      * @throws \Throwable anything the clearer itself throws
