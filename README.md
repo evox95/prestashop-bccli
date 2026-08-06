@@ -55,7 +55,7 @@ php bin/console prestashop:thumbnails:regenerate all
 # One image domain: categories, manufacturers, suppliers, products, or stores
 php bin/console prestashop:thumbnails:regenerate products
 
-# One image format, deleting old thumbnails first, showing progress
+# One image format, deleting old thumbnails first, printing a line per domain
 php bin/console prestashop:thumbnails:regenerate all 3 --delete -v
 ```
 
@@ -101,8 +101,12 @@ printing its table is the whole point of running it.)
 41 3 * * * /usr/bin/php /var/www/html/bin/console prestashop:search:index --full
 ```
 
-Add `-v` when you run a command by hand and want a progress bar and a summary.
-Errors print even with `-q`, because a silent failure is worse than noise.
+Add `-v` when you run a command by hand and want to see progress and a summary.
+`thumbnails:regenerate -v` prints one line per image domain (`categories`,
+`products`, ...), shown as soon as that domain starts and completed with its
+elapsed time once it finishes - useful because `products` is typically nearly
+all of the run. Errors print even with `-q`, because a silent failure is worse
+than noise.
 
 If a second `thumbnails:regenerate` or `search:index` starts while the first is
 still going, it exits quietly instead of competing for the same files. Feature

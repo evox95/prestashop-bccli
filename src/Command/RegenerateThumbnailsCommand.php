@@ -26,7 +26,6 @@ use Bccli\Thumbnails\Regenerator;
 use Bccli\Thumbnails\RunLock;
 use Bccli\Thumbnails\UnsupportedPlatformException;
 use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -127,16 +126,38 @@ class RegenerateThumbnailsCommand extends Command
             $image = (string) $input->getArgument('image');
             $domains = ImageDomain::isValid($image) ? ImageDomain::domainsFor($image) : array();
 
-            $progress = null;
-            if ($output->isVerbose() && $domains !== array()) {
+            // One line per domain instead of a shared progress bar: the bar only
+            // advanced between domains, so it sat motionless at "0/5" while the
+            // slow "products" pass ran (94% of a typical run, per the measurements
+            // that prompted this change) and then jumped to 100% in milliseconds -
+            // technically accurate, but read by anyone watching as a hang. Each
+            // domain's name is written to $output the moment it starts, flushed
+            // immediately (Symfony's StreamOutput flushes on every write), so a
+            // long-running domain is visibly in progress; the same line is then
+            // completed with its elapsed time once the domain finishes. The two
+            // writes never have a newline between them, so together they always
+            // form exactly one line per domain, whether it took milliseconds or
+            // minutes - there is nothing terminal-specific (no \r, no redraws)
+            // involved, so the output is identical whether read live or from a
+            // redirected log. Both lines go to $output (stdout), matching the
+            // header and summary lines around them; the old bar's stderr routing
+            // was Symfony's ProgressBar auto-redirecting itself whenever given a
+            // ConsoleOutputInterface, not a deliberate choice, and does not carry
+            // over now that ProgressBar is gone.
+            $showProgress = $output->isVerbose() && $domains !== array();
+            if ($showProgress) {
                 $output->writeln(sprintf('Regenerating thumbnails: %s', $image));
-                $progress = new ProgressBar($output, count($domains));
-                $progress->start();
             }
 
-            $started = microtime(true);
+            // Width shared by every domain line, computed from the full domain
+            // list rather than just the domains this run touches, so a
+            // single-domain run (e.g. "regenerate products -v") lines up exactly
+            // like "all" does.
+            $domainLabelWidth = max(array_map('strlen', ImageDomain::domainsFor(ImageDomain::ALL))) + 2;
+            $domainStartedAt = null;
+            $domainLineOpen = false;
 
-            $succeeded = false;
+            $started = microtime(true);
 
             try {
                 try {
@@ -144,38 +165,35 @@ class RegenerateThumbnailsCommand extends Command
                         $image,
                         $input->getArgument('image-type'),
                         (bool) $input->getOption('delete'),
-                        function () use ($progress) {
-                            if ($progress !== null) {
-                                $progress->advance();
+                        function () use ($output, $showProgress, &$domainStartedAt, &$domainLineOpen) {
+                            if (!$showProgress) {
+                                return;
                             }
+                            $output->writeln(sprintf('%.2fs', microtime(true) - $domainStartedAt));
+                            $domainLineOpen = false;
+                        },
+                        function ($domain) use ($output, $showProgress, $domainLabelWidth, &$domainStartedAt, &$domainLineOpen) {
+                            if (!$showProgress) {
+                                return;
+                            }
+                            $output->write(sprintf('  %-' . $domainLabelWidth . 's', $domain));
+                            $domainStartedAt = microtime(true);
+                            $domainLineOpen = true;
                         }
                     );
-                    $succeeded = true;
                 } finally {
-                    // Always leaves the bar newline-terminated before anything else
-                    // writes to $errorOutput, on every path - success or exception.
-                    // Without this, a message written from a catch below would land
-                    // glued onto a half-drawn bar instead of on its own line.
-                    //
-                    // finish() itself is called only on success: it jumps the bar to
-                    // 100% (ProgressBar::finish() calls setProgress($this->max)),
-                    // which would misrepresent an interrupted run as complete right
-                    // above the error message explaining that it was not.
-                    //
-                    // The newline must go to $errorOutput, not $output: Symfony's
-                    // ProgressBar redirects itself to getErrorOutput() whenever it is
-                    // given a ConsoleOutputInterface (so redraws never pollute piped
-                    // stdout), so the bar's actual stream is $errorOutput, not
-                    // $output - confirmed by capturing stdout/stderr separately,
-                    // which shows every redraw landing on stderr. $errorOutput
-                    // already collapses to $output for a plain OutputInterface (see
-                    // its definition above), so this is correct on both paths.
-                    if ($progress !== null) {
-                        if ($succeeded) {
-                            $progress->finish();
-                        }
-                        $errorOutput->writeln('');
-                        $progress = null;
+                    // Mirrors the old bar's forced newline, adapted to this
+                    // design: if a domain's line was opened but never completed -
+                    // an exception or fatal error interrupted work mid-domain, so
+                    // its "done" callback above never ran - close it before
+                    // anything else is printed, so an error message never lands
+                    // glued onto a half-written progress line. On every normal
+                    // path (success, or a domain that merely reported an error
+                    // and moved on) the last domain's own "done" callback already
+                    // closed its line, so this is a no-op there.
+                    if ($domainLineOpen) {
+                        $output->writeln('');
+                        $domainLineOpen = false;
                     }
                 }
             } catch (\InvalidArgumentException $e) {

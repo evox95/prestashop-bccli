@@ -3,6 +3,26 @@
 All notable changes to this project are documented in this file.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-08-06
+
+### Changed
+- `prestashop:thumbnails:regenerate -v` no longer draws a shared progress bar.
+  The bar only advanced once a whole domain (categories, manufacturers,
+  suppliers, products, stores) finished, so on a real run it sat motionless at
+  "0/5" while the slow `products` pass ran - typically over 90% of the total
+  time - and then jumped to 100% in milliseconds once the fast domains that
+  follow it finished; a user watching it read that as a hang, not progress.
+  Core's own thumbnail regeneration has no finer-grained progress hook to
+  drive a smoother bar with. `-v` now prints one line per domain instead: the
+  domain's name is written the moment it starts, flushed immediately, so a
+  long-running domain is visibly in progress rather than silent; the same
+  line is completed with its elapsed time once that domain finishes. This
+  also reads sensibly for a single-domain run
+  (`thumbnails:regenerate products -v`), which the old bar - sized to the
+  domain count of whatever was requested - technically also handled, but as a
+  bar that filled in one jump regardless of how long the single domain took.
+  The summary line printed after all domains finish is unchanged.
+
 ## [1.1.2] - 2026-08-06
 
 ### Fixed

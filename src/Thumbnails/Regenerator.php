@@ -140,16 +140,21 @@ class Regenerator
     }
 
     /**
-     * @param string      $image        value of the <image> argument
-     * @param string|null $imageTypeId  value of the <image-type> argument
-     * @param bool        $delete       erase existing thumbnails first
-     * @param callable    $onDomainDone called with each finished domain name
+     * @param string      $image         value of the <image> argument
+     * @param string|null $imageTypeId   value of the <image-type> argument
+     * @param bool        $delete        erase existing thumbnails first
+     * @param callable    $onDomainDone  called with each finished domain name
+     * @param callable    $onDomainStart called with each domain name right
+     *                                   before it starts, so a caller can
+     *                                   report progress on a domain that is
+     *                                   still running rather than only ever
+     *                                   after it finishes
      *
      * @return RegenerationReport
      *
      * @throws \InvalidArgumentException on invalid arguments
      */
-    public function run($image, $imageTypeId, $delete, $onDomainDone = null)
+    public function run($image, $imageTypeId, $delete, $onDomainDone = null, $onDomainStart = null)
     {
         if (!ImageDomain::isValid($image)) {
             throw new \InvalidArgumentException(sprintf(
@@ -170,6 +175,10 @@ class Regenerator
         }
 
         foreach ($domains as $domain) {
+            if (is_callable($onDomainStart)) {
+                call_user_func($onDomainStart, $domain);
+            }
+
             $this->runDomain($domain, $typeId, $delete, $report);
 
             if (is_callable($onDomainDone)) {

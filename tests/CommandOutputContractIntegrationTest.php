@@ -313,3 +313,36 @@ list($contractRtFailExit, $contractRtFailStdout, $contractRtFailStderr) = bccli_
 bccli_assert_same(1, $contractRtFailExit, 'RegenerateThumbnailsCommand: an unknown image domain under -q still exits 1');
 bccli_assert($contractRtFailStderr !== '', 'RegenerateThumbnailsCommand: an unknown image domain under -q still writes to stderr');
 bccli_assert_same('', $contractRtFailStdout, 'RegenerateThumbnailsCommand: the unknown-domain failure writes nothing to stdout');
+
+// -v replaced a shared progress bar (which only advanced between domains and
+// so sat motionless through the slowest one) with a line per domain, written
+// the moment that domain starts and completed with its elapsed time once it
+// finishes. Assertions here stay loose on purpose - the domain name must
+// appear in stdout, not the exact column width or decimal formatting, so a
+// future formatting tweak does not need to touch this file.
+list($contractRtVerboseExit, $contractRtVerboseStdout, $contractRtVerboseStderr) = bccli_contract_probe_run(
+    $contractPsRoot,
+    $contractModuleAutoload,
+    RegenerateThumbnailsCommand::class,
+    array('categories', '-v')
+);
+bccli_assert_same(
+    0,
+    $contractRtVerboseExit,
+    'RegenerateThumbnailsCommand: a categories run with -v exits 0'
+        . ($contractRtVerboseExit !== 0 ? ' - stderr: ' . $contractRtVerboseStderr : '')
+);
+bccli_assert(
+    strpos($contractRtVerboseStdout, 'Regenerating thumbnails: categories') !== false,
+    'RegenerateThumbnailsCommand: -v prints the header line naming the requested domain'
+);
+bccli_assert(
+    strpos($contractRtVerboseStdout, 'categories') !== false
+        && strpos($contractRtVerboseStdout, 's' . "\n") !== false,
+    'RegenerateThumbnailsCommand: -v prints a per-domain line for "categories" with an elapsed time'
+);
+bccli_assert(
+    strpos($contractRtVerboseStdout, 'Done:') !== false,
+    'RegenerateThumbnailsCommand: -v still prints the summary line after the per-domain lines'
+);
+bccli_assert_same('', $contractRtVerboseStderr, 'RegenerateThumbnailsCommand: a successful -v run writes nothing to stderr');
