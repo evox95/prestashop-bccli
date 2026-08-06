@@ -94,9 +94,77 @@ jobs:
       - name: Unit tests
         run: php tests/run-unit.php
 
+  # Unit tests alone are not enough to gate a release. v1.1.0 shipped a command
+  # that threw ServiceNotFoundException on PrestaShop 8.0, because the service
+  # it resolved by name is only registered from 8.2 onwards - something no unit
+  # test can see. Every supported PrestaShop version must run the integration
+  # suite before a ZIP is published.
+  integration:
+    name: Integration - PrestaShop ${{ matrix.prestashop }}
+    needs: detect-version
+    if: needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        prestashop: ['8.0', '8.1', '8.2']
+    services:
+      mysql:
+        image: mariadb:10.6
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: prestashop
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="healthcheck.sh --connect"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start PrestaShop ${{ matrix.prestashop }}
+        env:
+          PS_VERSION: ${{ matrix.prestashop }}
+        run: |
+          set -euo pipefail
+          docker run -d --name ps --network host \
+            -e DB_SERVER=127.0.0.1 -e DB_USER=root -e DB_PASSWD=root \
+            -e PS_INSTALL_AUTO=1 -e PS_DEV_MODE=0 \
+            "prestashop/prestashop:${PS_VERSION}"
+
+          # Wait for ps_image_type to be POPULATED, not merely for a file or an
+          # early table to appear - see the tests workflow for the two readiness
+          # signals that look right and are not.
+          timeout 900 bash -c '
+            until docker exec ps php -r "
+              \$p = \"/var/www/html/app/config/parameters.php\";
+              if (!is_file(\$p)) { exit(1); }
+              \$c = require \$p;
+              \$c = \$c[\"parameters\"];
+              try {
+                \$pdo = new PDO(
+                  \"mysql:host=\" . \$c[\"database_host\"] . \";dbname=\" . \$c[\"database_name\"],
+                  \$c[\"database_user\"], \$c[\"database_password\"]
+                );
+                \$t = \$c[\"database_prefix\"] . \"image_type\";
+                exit(\$pdo->query(\"SELECT COUNT(*) FROM \$t\")->fetchColumn() > 0 ? 0 : 1);
+              } catch (Throwable \$e) { exit(1); }
+            " 2>/dev/null; do sleep 5; done
+          '
+          sleep 15
+
+      - name: Run the integration suite
+        run: |
+          set -euo pipefail
+          docker cp . ps:/var/www/html/modules/bccli
+          docker exec ps php /var/www/html/modules/bccli/tests/run-integration.php
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs --tail 80 ps
+
   build:
     name: Build module ZIP
-    needs: [detect-version, test]
+    needs: [detect-version, test, integration]
     if: needs.detect-version.outputs.bumped == 'true'
     runs-on: ubuntu-latest
     outputs:
