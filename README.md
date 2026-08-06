@@ -1,260 +1,164 @@
 # bccli
 
-Backports three of PrestaShop 9's console commands to PrestaShop 8.x, with
-the same names and options, so a crontab entry or a habit keeps working
-unchanged across an 8 → 9 upgrade:
+Console commands for PrestaShop 8 that PrestaShop 9 has and 8 doesn't.
 
-- `prestashop:thumbnails:regenerate` — regenerates product, category,
-  manufacturer, supplier and store image thumbnails without hitting a web
-  request's execution time limit.
-- `prestashop:search:index` — rebuilds the front office search index without
-  going through the back office's **Preferences → Search** page.
-- `prestashop:feature-flag` — enables, disables or lists PrestaShop feature
-  flags from the CLI instead of the back office's **Advanced Parameters →
-  Experimental Features** page.
-
-## The thumbnails problem
-
-The back office regeneration page runs inside a normal HTTP request, so it is
-bound by PHP's `max_execution_time`. On a catalogue of any size that limit is
-reached before the job finishes, and re-running starts from the beginning —
-large catalogues can never complete this way.
-
-Measured on PrestaShop 8.2.7, 1000 product images × 5 formats (5000
-thumbnails total):
-
-| Run | Result |
-|---|---|
-| Back office, `max_execution_time = 30` (a typical hosting default) | timed out after 26.2 s, having processed 129 of 1000 images (13%) |
-| CLI, no effective time limit | completed in 175 s, 0 errors, all 5000 thumbnails written |
-
-PrestaShop 9.1 fixed this by shipping `prestashop:thumbnails:regenerate` as a
-core console command, and bccli backports that same command to PrestaShop 8.x.
-
-## Requirements
-
-- PrestaShop 8.0, 8.1 or 8.2 — these are the versions tested in CI. Other 8.x
-  point releases are expected to work but are not verified.
-- PHP 7.2.5 or later - PrestaShop 8.0's own minimum supported PHP version.
-
-**PrestaShop 9.x already ships both commands natively.** Installing bccli
-there is harmless — each command detects its native PrestaShop 9 counterpart
-and withdraws itself — but pointless, since there is nothing left for it to
-add.
-
-## Installation
-
-bccli is **not distributed through the PrestaShop Addons marketplace**. Install
-it one of two ways:
-
-1. **ZIP.** Download the latest release ZIP from the repository's Releases
-   page and upload it through **Modules → Upload a module** in the back
-   office, the same way as any other module ZIP.
-2. **Git clone.** Clone the repository directly into `modules/bccli` in your
-   PrestaShop installation:
-
-   ```bash
-   git clone <repository-url> modules/bccli
-   ```
-
-Either way, install the module from **Modules → Module Manager** (search for
-"BC CLI") once the files are in place. Installation adds no database tables
-and registers no hooks — there is nothing to configure.
-
-## Usage: thumbnail regeneration
-
-```
-php bin/console prestashop:thumbnails:regenerate <image> [<image-type>] [-d|--delete] [-v]
-```
-
-| Argument / option | Meaning |
-|---|---|
-| `<image>` | one of `all`, `categories`, `manufacturers`, `suppliers`, `products`, `stores` |
-| `<image-type>` | optional image format ID; omit or pass `0` for every configured format |
-| `-d`, `--delete` | erase existing thumbnails before regenerating |
-| `-v` | show a progress bar and a summary when the run finishes |
-
-Examples:
+If you run a large shop, you have probably watched the back office give up
+half-way through regenerating thumbnails, or through reindexing search after a
+bulk import. The work needs more time than a web request gets. These commands do
+the same work from the command line, where there is no timeout, and they are
+quiet enough to put in cron.
 
 ```bash
-# Regenerate every thumbnail for every domain.
+php bin/console prestashop:thumbnails:regenerate all
+php bin/console prestashop:search:index --full
+php bin/console prestashop:feature-flag list
+```
+
+Every command uses the same name and options as its PrestaShop 9 counterpart, so
+your crontab keeps working after you upgrade. On PrestaShop 9 the module steps
+aside and lets the core command run.
+
+## What it fixes
+
+Regenerating 1,000 product images across 5 formats, measured on PrestaShop 8.2.7:
+
+| Where | Result |
+|---|---|
+| Back office, 30-second PHP limit | Timed out after 26 seconds, 129 of 1,000 images done |
+| Command line | Finished in 175 seconds, no errors |
+
+Search indexing hits the same wall after a large import, and toggling feature
+flags has no command-line path at all in PrestaShop 8.
+
+## Install
+
+Download the ZIP from [Releases](https://github.com/evox95/prestashop-bccli/releases),
+then either upload it in **Modules → Module Manager → Upload a module**, or
+unzip it into your shop's `modules/` directory and install it from the module
+list.
+
+There is nothing to configure and no back office page. Installing it just makes
+the commands available.
+
+Requires PrestaShop 8.0–8.2 and PHP 7.2.5 or later. Not on the Addons
+marketplace.
+
+## Commands
+
+### Regenerate thumbnails
+
+```bash
+# Everything
 php bin/console prestashop:thumbnails:regenerate all
 
-# Regenerate only product thumbnails.
+# One image domain: categories, manufacturers, suppliers, products, or stores
 php bin/console prestashop:thumbnails:regenerate products
 
-# Regenerate a single image format (its numeric ID) across every domain,
-# deleting existing thumbnails first, with progress output.
+# One image format, deleting old thumbnails first, showing progress
 php bin/console prestashop:thumbnails:regenerate all 3 --delete -v
 ```
 
-### Output is silent on success
-
-The command is designed to run from cron, which normally mails any output it
-produces. **A successful run without `-v` writes zero bytes to both stdout
-and stderr and exits `0`.** A failing run always writes a short message to
-stderr and exits `1`, whether or not `-v` or `-q` was passed. With `-v`, a
-successful run shows a progress bar (on stderr) and a one-line summary (on
-stdout); nothing about the silence guarantee changes for failures.
-
-Overlapping bccli runs are prevented on a best-effort basis: if another bccli
-regeneration is already running, a second invocation exits `0` having done
-nothing — that is normal operation for two overlapping cron firings, not an
-error, and it does not generate mail either. The lock only excludes other
-bccli runs, not a back office regeneration started at the same time, and it
-is skipped entirely (the run proceeds unlocked) if the lock file itself
-cannot be created — an unwritable cache directory must not block a
-legitimate run.
-
-### Cron example
-
-```cron
-# Regenerate every night at 03:17. Silent unless something fails.
-17 3 * * * /usr/bin/php /var/www/html/bin/console prestashop:thumbnails:regenerate all
-```
-
-Adjust the PHP binary path and the path to `bin/console` for your
-installation.
-
-## Difference from the PrestaShop 8 back office
-
-`<image-type>` is honoured even when regenerating `all`. The PrestaShop 8
-back office ignores the format filter in that case and always regenerates
-every configured format; PrestaShop 9's native command applies the filter
-regardless of which domain is selected. Since this module's goal is interface
-parity with PrestaShop 9, it follows PrestaShop 9's behaviour — this is the
-one place it deliberately does not match the PrestaShop 8 back office.
-
-## Usage: search indexing
-
-```
-php bin/console prestashop:search:index [-f|--full] [-s|--shop-id ID] [-g|--shop-group-id ID] [-p|--product-id ID]
-```
-
-| Option | Meaning |
-|---|---|
-| `-f`, `--full` | rebuild the whole index instead of only not-yet-indexed products |
-| `-s`, `--shop-id` | limit the run to one shop |
-| `-g`, `--shop-group-id` | limit the run to one shop group |
-| `-p`, `--product-id` | index a single product; forces `--full` off, matching core's own `Search::indexation()` |
-
-`--full` combined with `--shop-group-id` is refused: PrestaShop core's
-`Search::indexation()` only scopes a full rebuild to one shop group when the
-current shop context is a single shop (`Shop::CONTEXT_SHOP`); anything wider,
-including a shop-group context, truncates the search index for the **entire**
-installation, not just the given group. Combine `--full` with `--shop-id`
-instead, or omit `--full` to only index not-yet-indexed products across the
-group.
-
-Examples:
+### Index products for search
 
 ```bash
-# Rebuild the whole search index for shop 1.
-php bin/console prestashop:search:index --full --shop-id=1
+# Rebuild the whole index
+php bin/console prestashop:search:index --full
 
-# Index only products that are not indexed yet, across every shop.
+# Only products that are not indexed yet
 php bin/console prestashop:search:index
 
-# Reindex a single product.
+# A single product, or a single shop
 php bin/console prestashop:search:index --product-id=42
+php bin/console prestashop:search:index --full --shop-id=1
 ```
 
-### Output is silent on success
+`--full` together with `--shop-group-id` is rejected. PrestaShop's own indexer
+would empty the search index for *every* shop in that combination, not just the
+group you named, so the command refuses rather than doing something surprising.
 
-Same contract as thumbnail regeneration: a successful run without `-v` writes
-zero bytes to both stdout and stderr and exits `0`; a failing run (including
-an invalid option combination) always writes a short message to stderr and
-exits `1`, whether or not `-v` or `-q` was passed. Overlapping runs of this
-command are excluded on the same best-effort `flock()` basis — a second
-invocation while one is already running exits `0` having done nothing.
-
-### Cron example
-
-```cron
-# Rebuild the search index every night at 03:41. Silent unless something fails.
-41 3 * * * /usr/bin/php /var/www/html/bin/console prestashop:search:index --full
-```
-
-## Usage: feature flags
-
-```
-php bin/console prestashop:feature-flag <action> [<feature_flag>]
-```
-
-| Argument | Meaning |
-|---|---|
-| `<action>` | one of `enable`, `disable`, `list` |
-| `<feature_flag>` | name of the flag; required for `enable`/`disable`, not accepted for `list` |
-
-An unknown flag name exits `1` and lists the valid names instead of silently
-doing nothing, unlike the underlying `FeatureFlagRepository`, which no-ops on
-an unknown name.
-
-Examples:
+### Feature flags
 
 ```bash
-# Show every feature flag and its current state.
 php bin/console prestashop:feature-flag list
-
-# Turn a flag on.
 php bin/console prestashop:feature-flag enable product_page_v2
-
-# Turn a flag off.
 php bin/console prestashop:feature-flag disable product_page_v2
 ```
 
-### Output
+`list` prints a table of every flag and its state. `enable` and `disable` say
+nothing when they succeed.
 
-`enable` and `disable` follow the same silent-on-success contract as the
-other two commands: no `-v`, no output, exit `0`; a failure (including an
-unknown flag name) always writes a short message to stderr and exits `1`,
-whether or not `-v` or `-q` was passed. **`list` is the one exception in this
-module** — there is no useful silent form of "show me the flags", so it
-always prints a table to stdout on success and exits `0`.
+## Running from cron
 
-## Multistore
+Success is silent. Nothing goes to stdout or stderr and the exit code is 0, so
+cron sends no mail. When something fails, the message goes to stderr and the
+exit code is 1, so you hear about it.
 
-**Thumbnail regeneration** is out of scope for multistore in v1. Image
-*files* are shared across all shops in a PrestaShop installation, but image
-*format settings* (which sizes are generated, at what dimensions) are
-configured per shop. A correct multistore implementation needs to decide
-which shop's format configuration to run against and is left for a future
-version. v1 runs against the default shop context PrestaShop establishes at
-bootstrap — the same context a plain `bin/console` invocation always gets.
+```cron
+# Nightly, quiet unless something breaks.
+17 3 * * * /usr/bin/php /var/www/html/bin/console prestashop:thumbnails:regenerate all
+41 3 * * * /usr/bin/php /var/www/html/bin/console prestashop:search:index --full
+```
 
-**Search indexing** honours `--shop-id` and `--shop-group-id` directly, since
-`Search::indexation()` already scopes its work by the current shop context —
-there was no equivalent gap to leave open here.
+Add `-v` when you run a command by hand and want a progress bar and a summary.
+Errors print even with `-q`, because a silent failure is worse than noise.
 
-**Feature flags** have no per-shop dimension to begin with: `ps_feature_flag`
-carries no `id_shop` column, so a flag's state is installation-wide and there
-is nothing multistore-specific for this command to get wrong.
+If a second run starts while the first is still going, it exits quietly instead
+of competing for the same files.
 
-## Known limitations inherited from core
+## Things worth knowing
 
-These are pre-existing PrestaShop 8 behaviours, not bugs in this module. They
-are documented here so they are not mistaken for one.
+**`<image-type>` behaves like PrestaShop 9, not like the PrestaShop 8 back
+office.** The back office ignores the format ID when you regenerate everything;
+this command honours it, matching PrestaShop 9.
 
-- **`--delete` does not remove `_thumb`-derived thumbnails.** Core's deletion
-  logic matches filenames with a pattern that misses thumbnails generated
-  from a `_thumb` source image (used for the `medium` format on category
-  images). Those files are left behind and are not refreshed by `--delete`.
-  PrestaShop 9 fixed this.
-- **Every resize writes a `fileType` marker file** into the destination
-  directory, alongside the thumbnail itself. This is core behaviour
-  (`ImageManager`), not something this module adds or can suppress.
-- **`--delete` opens a window with no thumbnails at all.** Existing files are
-  removed before regeneration starts, not swapped in atomically, so anything
-  reading a thumbnail between the two steps sees it missing until the run
-  reaches that domain. This is core's own delete-then-regenerate behaviour,
-  not specific to running it from the CLI.
+**Multistore is not supported yet.** Image files are shared between shops but
+format settings are per-shop, so the commands use whichever shop context
+PrestaShop establishes at startup.
 
-## Development
+**Two quirks come from PrestaShop itself**, not from this module: `--delete`
+does not remove `_thumb`-derived thumbnails (fixed in PrestaShop 9), and every
+resize writes a small `fileType` marker file next to the images.
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for running the test suite and the
-PHP 7.1 syntax floor, and [`SECURITY.md`](SECURITY.md) for reporting a
-vulnerability.
+## Missing a command? Found a bug?
+
+Both are worth an [issue](https://github.com/evox95/prestashop-bccli/issues).
+
+PrestaShop 9 added several commands that 8 never got, and this module covers
+only the ones that solve a real operational problem. If you are working around a
+missing one — maintenance mode, cache clearing, or anything in PrestaShop 9 you
+miss on 8 — open an issue and describe what you are trying to do. That is more
+useful than a feature name, because it often turns out there is a simpler path.
+
+For bugs, the fastest fix comes from an issue that includes your PrestaShop and
+PHP versions, the command you ran, and what happened instead. If a command
+printed something, paste it verbatim.
+
+Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers running the
+tests and the one house rule that surprises people: the source targets PHP 7.1
+syntax on purpose, even though the module needs 7.2.5 to run, so that a
+PrestaShop 1.7 port stays possible.
+
+## How it works
+
+PrestaShop 9 moved thumbnail regeneration into a service and wrapped it in a
+command. PrestaShop 8 keeps the same logic locked inside `protected` methods of
+a back office controller, with no adapter to reuse.
+
+So this module drives that controller directly instead of reimplementing image
+resizing. The thumbnails it produces are therefore what the back office
+produces, and there is no second copy of the resize logic to drift out of sync.
+All of the coupling to PrestaShop's internals lives in one file,
+`src/Thumbnails/LegacyControllerBridge.php`, which checks that everything it
+needs exists before touching anything, and reports a clear error instead of a
+PHP crash when a version does not match.
+
+The design notes in [`docs/`](docs/) record what was measured and why each
+decision went the way it did.
 
 ## Licence
 
-AFL-3.0 — see [`LICENSE`](LICENSE).
+[Academic Free License 3.0](LICENSE), the licence PrestaShop core and most
+modules use. You can modify it, redistribute it, and sell it, as long as the
+copyright notice stays.
+
+Copyright (c) 2026 Mateusz Bartocha
