@@ -39,8 +39,13 @@ $lock->release();
 $result = shell_exec(PHP_BINARY . ' ' . escapeshellarg($probe));
 bccli_assert_same('ACQUIRED', trim((string) $result), 'the lock is available again after release');
 
-$lock->release();
-bccli_assert(true, 'releasing twice does not error');
+$releaseThrew = false;
+try {
+    $lock->release();
+} catch (\Throwable $e) {
+    $releaseThrew = true;
+}
+bccli_assert(!$releaseThrew, 'releasing twice does not error');
 
 @unlink($probe);
 @unlink($path);
