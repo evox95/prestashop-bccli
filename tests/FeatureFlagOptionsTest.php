@@ -48,10 +48,18 @@ foreach (array('', 'Enable', 'ENABLE', 'toggle', 'delete', ' enable') as $badAct
         FeatureFlagOptions::fromInput($badAction, 'product_page_v2');
     } catch (InvalidArgumentException $e) {
         $threw = true;
-        bccli_assert(
-            strpos($e->getMessage(), $badAction) !== false || $badAction === '',
-            "the message for action \"$badAction\" names the offending value"
-        );
+        // An empty action has nothing distinctive to name in the message, so
+        // there is no meaningful "names the offending value" claim to make for
+        // it - skip rather than fold a disjunct into the condition that would
+        // make the assertion trivially true instead of actually skipping it
+        // (strpos($msg, '') is always 0, and 0 !== false, so "|| $badAction
+        // === ''" never changed the outcome; it only looked like a carve-out).
+        if ($badAction !== '') {
+            bccli_assert(
+                strpos($e->getMessage(), $badAction) !== false,
+                "the message for action \"$badAction\" names the offending value"
+            );
+        }
     }
     bccli_assert($threw, "action \"$badAction\" is rejected");
 }

@@ -52,6 +52,14 @@ class SearchIndexReport
     }
 
     /**
+     * No production caller: SearchIndexCommand's own verbose summary only
+     * needs indexRowsAfter()/indexRowsDelta()/elapsedSeconds(). Kept public
+     * because SearchIndexIntegrationTest.php uses it to check the report's
+     * "before" figure against a count that suite measures independently -
+     * without it, that assertion would have nothing to compare against except
+     * the report's own indexRowsAfter()/indexRowsDelta(), which are derived
+     * from the same measurement and so could not catch either one being wrong.
+     *
      * @return int
      */
     public function indexRowsBefore()

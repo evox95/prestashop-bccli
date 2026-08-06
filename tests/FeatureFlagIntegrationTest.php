@@ -30,17 +30,24 @@ declare(strict_types=1);
  * of silently no-opping (the exact silent no-op FeatureFlagRepository itself
  * would otherwise produce - see FeatureFlagManager's own docblock).
  *
- * NOT pinned here: that clearRoutingCache() actually purges the routing
- * cache pool. That was verified once, directly, against a live container by
- * writing a probe item into the cache.app pool, running cache:clear, and
- * re-checking through a freshly booted kernel/container - see the module's
- * change history for that investigation. Re-running a full cache:clear from
- * this suite on every test run would be slow and would not tell us anything
- * that probe did not already establish more precisely; what this suite does
- * pin is that setState() does not throw because of the cache-clear step on a
- * real install (if clearRoutingCache() started failing, the try/catch in
- * setState() would turn that into a \RuntimeException and the assertion
- * below that setState() completes without exception would catch it).
+ * Also pinned, in the cache-pool-probe section at the very end of this file:
+ * that clearRoutingCache() (renamed from an earlier, wrongly-named
+ * clearCompiledCache() once its fix actually landed on the right service)
+ * really does clear the cache.app pool
+ * PrestaShopBundle\Routing\Converter\CacheProvider reads from, not merely
+ * avoid crashing. That distinction matters because a wrong fix once passed
+ * every OTHER assertion in this file: Symfony's own public "cache_clearer"
+ * chain service exits 0 in total silence on every toggle, exactly like a
+ * correct fix, while never actually touching cache.app - see
+ * FeatureFlagManager::clearRoutingCache()'s own docblock for the full
+ * CachePoolPass-level trace of why. The cache-pool-probe section below seeds
+ * a distinguishable item directly into cache.app, runs one real toggle
+ * through the real command as a genuine subprocess, and asserts the item is
+ * gone afterward - the only kind of assertion that can tell a correct
+ * clearer apart from one that merely completes without error, which is
+ * exactly why it is not folded into the ordinary toggle assertions above:
+ * those only ever proved setState() does not throw because of the
+ * cache-clear step, never that the step did anything.
  */
 
 use Bccli\FeatureFlag\FeatureFlagManager;
@@ -152,12 +159,14 @@ bccli_assert($threw, 'an unknown flag name raises UnknownFeatureFlagException in
 // instantiated yet; if the file backing it is gone by the time that
 // happens, PHP's require() fails and Symfony's own error rendering turns a
 // successful toggle into a reported failure. See
-// FeatureFlagManager::clearCompiledCache()'s own docblock for the full
-// three-stage writeup (in-process cache:clear, deferred filesystem
-// deletion, and why the final fix - Symfony's public cache_clearer service,
-// which only ever calls ->clear() on PSR-6 pool adapters and never touches
-// the compiled-container directory at all - is what actually closes both
-// failure modes).
+// FeatureFlagManager::clearRoutingCache()'s own docblock for the full
+// history (in-process cache:clear, deferred filesystem deletion, and a
+// third attempt - Symfony's public "cache_clearer" chain service - that
+// shipped briefly and silently never reached cache.app at all). The fix
+// that actually closes every failure mode this loop and the
+// cache-pool-probe section below both pin is cache.app_clearer: it only
+// ever calls ->clear() on the cache.app PSR-6 pool, never on the
+// compiled-container directory this loop's crash traces back to.
 //
 // This loop deliberately does NOT call FeatureFlagManager::setState() or
 // FeatureFlagCommand::execute() directly, unlike the rest of this suite -
@@ -355,4 +364,149 @@ bccli_assert_same(
     $consecutiveOriginalState,
     $afterConsecutiveRestore,
     'the flag is back to its original state after the consecutive-toggle run'
+);
+
+// --- clearRoutingCache() actually clears the cache.app pool, not just ------
+// --- avoids crashing (regression test for the cache-clearing correctness ---
+// --- defect - distinct from, and discovered after, the crash-safety -------
+// --- defect the consecutive-toggle loop above pins) -------------------------
+//
+// The bug this pins: a fix can exit 0 with zero output on every single
+// toggle - satisfying every assertion above, including the four consecutive
+// real-process toggles - while never actually invalidating the cache.app
+// pool that PrestaShopBundle\Routing\Converter\CacheProvider reads from.
+// That is exactly what shipped briefly: Symfony's own public
+// "cache_clearer" chain service (Symfony\Component\HttpKernel\CacheClearer\
+// ChainCacheClearer) completed silently and successfully on every toggle,
+// because it genuinely is a working cache clearer - just not one wired to
+// cache.app. See FeatureFlagManager::clearRoutingCache()'s own docblock for
+// the full CachePoolPass-level trace of why "cache_clearer" (the chain)
+// never reaches cache.app while "cache.app_clearer" (the pool-specific
+// clearer CachePoolPass actually builds for it) does, backed by a live
+// probe: before=HIT, after cache_clearer=HIT (bug), after
+// cache.app_clearer=miss (correct).
+//
+// So this test does not stop at the exit code - it seeds a distinguishable
+// item directly into the cache.app pool via the container's own public
+// cache.app service, confirms it reads back as a hit, runs one real toggle
+// through the real command as a genuine subprocess (exercising
+// Application::run()'s actual command dispatch, exactly like the
+// consecutive-toggle loop above), and then confirms the SAME item now reads
+// back as a miss - the only observation that can tell a correct fix apart
+// from a fix that merely avoids crashing.
+$cachePoolTargetName = $flags[0]['name'];
+$cachePoolOriginalState = $flagsByName[$cachePoolTargetName];
+$cachePoolFlippedState = !$cachePoolOriginalState;
+
+$cachePool = $kernel->getContainer()->get('cache.app');
+
+$cacheProbeKey = 'bccli_test_cache_pool_probe_' . md5(uniqid('', true));
+$cacheProbeItem = $cachePool->getItem($cacheProbeKey);
+$cacheProbeItem->set('bccli-probe-value');
+$cachePool->save($cacheProbeItem);
+
+bccli_assert(
+    $cachePool->getItem($cacheProbeKey)->isHit(),
+    'the probe item is actually a hit in cache.app before the toggle - proves the seed itself worked'
+);
+
+$cachePoolProbeScript = str_replace(
+    array('__PS_ROOT__', '__MODULE_AUTOLOAD__'),
+    array($consecutivePsRoot, $consecutiveModuleAutoload),
+    $consecutiveProbeTemplate
+);
+$cachePoolProbePath = tempnam(sys_get_temp_dir(), 'bccli-ff-cache-probe') . '.php';
+file_put_contents($cachePoolProbePath, $cachePoolProbeScript);
+
+$cachePoolCommandLine = implode(' ', array(
+    escapeshellarg(PHP_BINARY),
+    escapeshellarg($cachePoolProbePath),
+    escapeshellarg($cachePoolFlippedState ? 'enable' : 'disable'),
+    escapeshellarg($cachePoolTargetName),
+    '-q',
+));
+
+$cachePoolPipes = array();
+$cachePoolProcess = proc_open(
+    $cachePoolCommandLine,
+    array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+    $cachePoolPipes
+);
+
+bccli_assert(is_resource($cachePoolProcess), 'the cache-pool probe subprocess starts');
+
+if (is_resource($cachePoolProcess)) {
+    fclose($cachePoolPipes[0]);
+    $cachePoolStdout = stream_get_contents($cachePoolPipes[1]);
+    $cachePoolStderr = stream_get_contents($cachePoolPipes[2]);
+    fclose($cachePoolPipes[1]);
+    fclose($cachePoolPipes[2]);
+    $cachePoolExitCode = proc_close($cachePoolProcess);
+
+    bccli_assert_same(
+        0,
+        $cachePoolExitCode,
+        'the real toggle behind the cache-pool probe exits 0'
+            . ($cachePoolExitCode !== 0 ? ' - stderr: ' . $cachePoolStderr : '')
+    );
+}
+
+@unlink($cachePoolProbePath);
+
+// This is the actual proof, and the only assertion in this file a wrong fix
+// like the plain "cache_clearer" chain could not have passed: cache.app is a
+// FilesystemAdapter pool that resolves every getItem() call straight from
+// disk (no per-request static item cache to fool this into a false negative
+// - the PSR-6 CacheItem objects it hands back are freshly constructed each
+// call), so this reads the true, current on-disk state of the exact key
+// seeded above, written by a genuinely separate OS process.
+bccli_assert(
+    !$cachePool->getItem($cacheProbeKey)->isHit(),
+    'the probe item is gone from cache.app after a real toggle through the real command - proves clearRoutingCache() actually reached this pool, not just avoided crashing'
+);
+
+// The subprocess above just wrote $cachePoolFlippedState to the row through
+// a completely separate OS process and DB connection - this process's own
+// EntityManager has no way to know that happened. $manager's repository
+// still holds whatever FeatureFlag object it last loaded or mutated
+// in-process (the "restore after consecutive-toggle" section above, already
+// sitting at $cachePoolOriginalState), and FeatureFlagRepository::enable()/
+// disable() (core code, read in full) fetch that same already-managed
+// object via findOneBy(), mutate it in memory, then flush() - Doctrine's
+// flush() diffs the entity's current in-memory value against its own
+// originalEntityData snapshot, not against the real row, so asking it to set
+// a value the stale object already holds produces an empty changeset and no
+// UPDATE at all, silently leaving the row at $cachePoolFlippedState. Clearing
+// the identity map first forces setState()'s internal getByName() to issue a
+// genuinely fresh SELECT, so it sees the subprocess's write and actually
+// detects a change to make. This is the exact same staleness the
+// consecutive-toggle loop's own comment documents and the loop already
+// guards against on every read-back - the gap here was that this section
+// only cleared before the read-back below, not before this restore call,
+// which is the one that actually needs to observe the subprocess's write.
+$consecutiveEntityManager->clear();
+
+// Restore the flag this probe toggled, the same way every other section in
+// this file restores what it changed.
+$cachePoolRestoreThrew = false;
+try {
+    $manager->setState($cachePoolTargetName, $cachePoolOriginalState);
+} catch (\Throwable $e) {
+    $cachePoolRestoreThrew = true;
+}
+bccli_assert(!$cachePoolRestoreThrew, 'restoring the flag after the cache-pool probe completes without exception');
+
+$consecutiveEntityManager->clear();
+
+$afterCachePoolRestore = null;
+foreach ($manager->listFlags() as $flag) {
+    if ($flag['name'] === $cachePoolTargetName) {
+        $afterCachePoolRestore = $flag['state'];
+        break;
+    }
+}
+bccli_assert_same(
+    $cachePoolOriginalState,
+    $afterCachePoolRestore,
+    'the flag is back to its original state after the cache-pool probe'
 );
