@@ -1,14 +1,17 @@
 # bccli
 
-Backports two of PrestaShop 9's console commands to PrestaShop 8.x, with the
-same names and options, so a crontab entry keeps working unchanged across an
-8 → 9 upgrade:
+Backports three of PrestaShop 9's console commands to PrestaShop 8.x, with
+the same names and options, so a crontab entry or a habit keeps working
+unchanged across an 8 → 9 upgrade:
 
 - `prestashop:thumbnails:regenerate` — regenerates product, category,
   manufacturer, supplier and store image thumbnails without hitting a web
   request's execution time limit.
 - `prestashop:search:index` — rebuilds the front office search index without
   going through the back office's **Preferences → Search** page.
+- `prestashop:feature-flag` — enables, disables or lists PrestaShop feature
+  flags from the CLI instead of the back office's **Advanced Parameters →
+  Experimental Features** page.
 
 ## The thumbnails problem
 
@@ -172,6 +175,43 @@ invocation while one is already running exits `0` having done nothing.
 41 3 * * * /usr/bin/php /var/www/html/bin/console prestashop:search:index --full
 ```
 
+## Usage: feature flags
+
+```
+php bin/console prestashop:feature-flag <action> [<feature_flag>]
+```
+
+| Argument | Meaning |
+|---|---|
+| `<action>` | one of `enable`, `disable`, `list` |
+| `<feature_flag>` | name of the flag; required for `enable`/`disable`, not accepted for `list` |
+
+An unknown flag name exits `1` and lists the valid names instead of silently
+doing nothing, unlike the underlying `FeatureFlagRepository`, which no-ops on
+an unknown name.
+
+Examples:
+
+```bash
+# Show every feature flag and its current state.
+php bin/console prestashop:feature-flag list
+
+# Turn a flag on.
+php bin/console prestashop:feature-flag enable product_page_v2
+
+# Turn a flag off.
+php bin/console prestashop:feature-flag disable product_page_v2
+```
+
+### Output
+
+`enable` and `disable` follow the same silent-on-success contract as the
+other two commands: no `-v`, no output, exit `0`; a failure (including an
+unknown flag name) always writes a short message to stderr and exits `1`,
+whether or not `-v` or `-q` was passed. **`list` is the one exception in this
+module** — there is no useful silent form of "show me the flags", so it
+always prints a table to stdout on success and exits `0`.
+
 ## Multistore
 
 **Thumbnail regeneration** is out of scope for multistore in v1. Image
@@ -185,6 +225,10 @@ bootstrap — the same context a plain `bin/console` invocation always gets.
 **Search indexing** honours `--shop-id` and `--shop-group-id` directly, since
 `Search::indexation()` already scopes its work by the current shop context —
 there was no equivalent gap to leave open here.
+
+**Feature flags** have no per-shop dimension to begin with: `ps_feature_flag`
+carries no `id_shop` column, so a flag's state is installation-wide and there
+is nothing multistore-specific for this command to get wrong.
 
 ## Known limitations inherited from core
 

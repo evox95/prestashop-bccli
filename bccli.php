@@ -37,6 +37,6 @@ class Bccli extends Module
         parent::__construct();
 
         $this->displayName = 'BC CLI';
-        $this->description = 'Console commands for shop maintenance: thumbnail regeneration and search indexing.';
+        $this->description = 'Console commands for shop maintenance: thumbnail regeneration, search indexing and feature flag management.';
     }
 }

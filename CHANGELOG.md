@@ -14,6 +14,14 @@ This project follows [Semantic Versioning](https://semver.org/).
   `Search::indexation()` truncates the *entire* installation's search index in
   that combination, not just the given group, so this option pairing is
   rejected outright rather than silently doing something dangerous.
+- `prestashop:feature-flag` console command for PrestaShop 8.x, matching the
+  `<action> [<feature_flag>]` interface PrestaShop 9.1 provides natively
+  (`enable`, `disable`, `list`). Withdraws itself when PrestaShop 9's own
+  command is present. `enable`/`disable` are silent on success like the rest
+  of this module; `list` is the one command that always prints, since there is
+  no useful silent form of "show me the flags". An unknown flag name exits 1
+  and lists the valid names instead of silently doing nothing, unlike the
+  underlying `FeatureFlagRepository`, which no-ops on an unknown name.
 
 ## [1.0.1] - 2026-08-05
 
