@@ -18,6 +18,11 @@ This project follows [Semantic Versioning](https://semver.org/).
   `UnsupportedPlatformException` - never a raw `ServiceNotFoundException` -
   if neither is available.
 
+### Changed
+- Releases are now gated on the integration suite across PrestaShop 8.0, 8.1
+  and 8.2, not on unit tests alone. The bug above shipped in 1.1.0 precisely
+  because the version matrix that catches it did not block the release.
+
 ## [1.1.0] - 2026-08-06
 
 ### Added
