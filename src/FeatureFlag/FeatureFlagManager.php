@@ -116,15 +116,15 @@ class FeatureFlagManager
         // The toggle above is already committed at this point - everything
         // from here on is best-effort cache maintenance: the toggle itself
         // has already succeeded no matter what happens next. See
-        // clearCompiledCache()'s docblock for why this is a plain,
+        // clearRoutingCache()'s docblock for why this is a plain,
         // synchronous, in-process call rather than deferred (as an earlier
-        // version of this fix did) - it only ever touches PSR-6 cache
-        // pools, never the compiled DI container directory, so there is
+        // version of this fix did) - it only ever touches the cache.app PSR-6
+        // pool, never the compiled DI container directory, so there is
         // nothing left for Symfony's own post-command lifecycle - or any
         // other concurrently running process sharing the same cache
         // directory - to trip over.
         try {
-            $this->clearCompiledCache();
+            $this->clearRoutingCache();
         } catch (\Throwable $e) {
             throw new \RuntimeException(sprintf(
                 'Feature flag "%s" was %s, but the routing cache could not be cleared (%s). '
@@ -297,36 +297,76 @@ class FeatureFlagManager
      * (RoutingCacheKeyGenerator::getCacheKey(), also read in full) this
      * module has no business reimplementing.
      *
-     * Symfony's own public, stable "cache_clearer" service
+     * A third attempt - Symfony's public, stable "cache_clearer" service
      * (Symfony\Component\HttpKernel\CacheClearer\ChainCacheClearer, tag
-     * kernel.cache_clearer) is used instead. Read in full together with the
-     * Psr6CacheClearer it chains to: both operate exclusively on PSR-6 pool
-     * adapters via ->clear() - never on the compiled-container directory,
-     * confirmed live by calling it and observing getCacheDir()'s
-     * "ContainerXXXX" entry untouched afterward. cache.app - the pool
-     * CacheProvider is itself wired to
-     * (prestashop.bundle.routing.converter.cache aliases
-     * Symfony\Component\Cache\Adapter\AdapterInterface, and cache.app is the
-     * concrete FilesystemAdapter behind it, confirmed live) - is one of the
-     * pools this clears, so the same routing-cache entry is invalidated,
-     * just via a coarser whole-pool sweep instead of one targeted key
-     * delete. A PSR-6 pool is contractually required to degrade a
+     * kernel.cache_clearer) - shipped briefly and was itself wrong: it does
+     * NOT reach cache.app. Confirmed two independent ways on PS 8.2.7
+     * (mking-secscan-ps-1):
+     *
+     * - Live probe: seeded a PSR-6 item into cache.app, ran a real toggle
+     *   through this command, re-checked the item. HIT before, still HIT
+     *   after $container->get('cache_clearer')->clear(...) - the toggle's DB
+     *   row changed but the routing cache was never actually invalidated, a
+     *   silent failure worse than the crash it replaced. Calling
+     *   $container->get('cache.app_clearer')->clear(...) on the same seeded
+     *   item produced a miss, as expected.
+     * - Source trace, not just the probe: vendor/symfony/symfony/src/
+     *   Symfony/Component/Cache/DependencyInjection/CachePoolPass::process()
+     *   is what actually assigns the kernel.cache_clearer tag that
+     *   "cache_clearer" (id) consumes via a tagged_iterator
+     *   (FrameworkBundle/Resources/config/services.xml:74-75). Reading that
+     *   pass in full: every cache.pool's `clearer` attribute is resolved and
+     *   used to build a private $pools argument for that specific clearer
+     *   service (cache.app's clearer="cache.app_clearer",
+     *   FrameworkBundle/Resources/config/cache.xml:11), but the
+     *   kernel.cache_clearer tag - the one that actually lands a clearer
+     *   inside the "cache_clearer" chain - is added to exactly one of those
+     *   pool clearers: `if ($this->cacheSystemClearerId === $id) {
+     *   $clearer->addTag($this->cacheSystemClearerTag); }`, where
+     *   $cacheSystemClearerId defaults to 'cache.system_clearer'
+     *   (cache.xml:49,153). cache.app_clearer - an alias of
+     *   cache.default_clearer (cache.xml:156) - never receives that tag. So
+     *   "cache_clearer" only ever chains cache.system (plus whatever other,
+     *   unrelated services explicitly tag themselves kernel.cache_clearer in
+     *   their own bundle config, e.g. Twig/annotations caches) - never
+     *   cache.app. This is exactly why the crash-fix regression test in
+     *   FeatureFlagIntegrationTest.php could not catch it: nothing in this
+     *   module ever asserted the cache entry was actually gone, only that
+     *   the toggle exited 0 without a crash - "cache_clearer" satisfies that
+     *   just as well as a correct clearer would, while silently leaving the
+     *   stale routing cache in place.
+     *
+     * The fix: cache.app_clearer directly (FrameworkBundle/Resources/config/
+     * cache.xml:156, public="true", confirmed reachable live). It is the
+     * exact clearer CachePoolPass built for the cache.app pool - the same
+     * pool CacheProvider is wired to (prestashop.bundle.routing.converter.
+     * cache aliases Symfony\Component\Cache\Adapter\AdapterInterface, and
+     * cache.app is the concrete FilesystemAdapter behind that alias,
+     * confirmed live and by reading routing.yml + cache.xml directly) - so
+     * this is a whole-pool sweep of cache.app instead of one targeted key
+     * delete, but it reaches the same entry CacheProvider::clearCache()
+     * would have deleted by name. Read together with Psr6CacheClearer, the
+     * class both cache.app_clearer and cache.system_clearer are instances
+     * of: it operates exclusively on PSR-6 pool adapters via ->clear() -
+     * never on the compiled-container directory, confirmed live by calling
+     * it and observing getCacheDir()'s "ContainerXXXX" entry untouched
+     * afterward. A PSR-6 pool is contractually required to degrade a
      * missing/cleared entry to a cache miss and recompute, never a fatal
      * require() failure - unlike the compiled container's generated class
-     * files, which is the actual root of both failures above. That contract
-     * is what makes this safe to call synchronously, inline, immediately
-     * after the toggle commits, with no register_shutdown_function()
-     * deferral needed: verified live at ~0.02s per call, no exception, and
-     * safe under the same four-consecutive-toggle reproduction that broke
-     * both earlier attempts.
+     * files, which is the actual root of both failures in attempt 1 and 2
+     * above. That contract is what makes this safe to call synchronously,
+     * inline, immediately after the toggle commits, with no
+     * register_shutdown_function() deferral needed: verified live at
+     * ~0.02s per call, no exception, and safe under the same
+     * four-consecutive-toggle reproduction that broke both earlier attempts.
      *
      * @throws \Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException
      * @throws \Throwable anything the clearer itself throws
      */
-    private function clearCompiledCache()
+    private function clearRoutingCache()
     {
         $container = $this->kernel()->getContainer();
-        $clearer = $container->get('cache_clearer');
+        $clearer = $container->get('cache.app_clearer');
         $clearer->clear($this->kernel()->getCacheDir());
     }
 }
