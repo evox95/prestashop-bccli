@@ -104,9 +104,21 @@ $db->execute('DELETE FROM `' . _DB_PREFIX_ . 'search_index`');
 $countAfterDelete = (int) $db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'search_index`');
 bccli_assert_same(0, $countAfterDelete, 'the delete actually removed search_index\'s rows before the rebuild');
 
+// The rows are already gone at this point, so a throw from run() would leave
+// this shop with an empty search index and abort the rest of the file before
+// any restore could happen. Rebuild in a finally so the index always comes
+// back, then re-throw so the failure is still loud.
 $elapsedWallStart = microtime(true);
 $options = SearchIndexOptions::fromInput(true, (string) $shopId, null, null);
-$report = (new SearchIndexer())->run($options);
+try {
+    $report = (new SearchIndexer())->run($options);
+} catch (Exception $e) {
+    Search::indexation(true);
+    throw $e;
+} catch (Error $e) {
+    Search::indexation(true);
+    throw $e;
+}
 $elapsedWallEnd = microtime(true);
 
 $countAfter = (int) $db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'search_index`');
