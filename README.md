@@ -40,8 +40,9 @@ list.
 There is nothing to configure and no back office page. Installing it just makes
 the commands available.
 
-Requires PrestaShop 8.0–8.2 and PHP 7.2.5 or later. Not on the Addons
-marketplace.
+Requires PrestaShop 8 and PHP 7.2.5 or later. Continuous integration tests it
+against PrestaShop 8.0, 8.1, and 8.2; later 8.x releases are expected to work
+but are unverified. Not on the Addons marketplace.
 
 ## Commands
 
@@ -91,7 +92,8 @@ nothing when they succeed.
 
 Success is silent. Nothing goes to stdout or stderr and the exit code is 0, so
 cron sends no mail. When something fails, the message goes to stderr and the
-exit code is 1, so you hear about it.
+exit code is 1, so you hear about it. (`feature-flag list` is the exception —
+printing its table is the whole point of running it.)
 
 ```cron
 # Nightly, quiet unless something breaks.
@@ -102,8 +104,9 @@ exit code is 1, so you hear about it.
 Add `-v` when you run a command by hand and want a progress bar and a summary.
 Errors print even with `-q`, because a silent failure is worse than noise.
 
-If a second run starts while the first is still going, it exits quietly instead
-of competing for the same files.
+If a second `thumbnails:regenerate` or `search:index` starts while the first is
+still going, it exits quietly instead of competing for the same files. Feature
+flag toggles take no lock — they are a single row update.
 
 ## Things worth knowing
 
@@ -111,9 +114,11 @@ of competing for the same files.
 office.** The back office ignores the format ID when you regenerate everything;
 this command honours it, matching PrestaShop 9.
 
-**Multistore is not supported yet.** Image files are shared between shops but
-format settings are per-shop, so the commands use whichever shop context
-PrestaShop establishes at startup.
+**Multistore support varies by command.** `search:index` takes `--shop-id` and
+`--shop-group-id` and sets the context accordingly. `thumbnails:regenerate` does
+not: image files are shared between shops while format settings are per-shop, so
+it uses whichever shop context PrestaShop establishes at startup. Feature flags
+are installation-wide.
 
 **Two quirks come from PrestaShop itself**, not from this module: `--delete`
 does not remove `_thumb`-derived thumbnails (fixed in PrestaShop 9), and every
@@ -147,18 +152,21 @@ a back office controller, with no adapter to reuse.
 So this module drives that controller directly instead of reimplementing image
 resizing. The thumbnails it produces are therefore what the back office
 produces, and there is no second copy of the resize logic to drift out of sync.
-All of the coupling to PrestaShop's internals lives in one file,
-`src/Thumbnails/LegacyControllerBridge.php`, which checks that everything it
-needs exists before touching anything, and reports a clear error instead of a
-PHP crash when a version does not match.
+The riskiest part of that coupling is isolated in
+`src/Thumbnails/LegacyControllerBridge.php`, which checks that every core class,
+method and constant it needs exists before touching anything, and reports a
+clear error instead of a PHP crash when a version does not match. The search and
+feature-flag commands touch core too, through documented public APIs
+(`Search::indexation()` and PrestaShop's own feature-flag repository) rather than
+through private internals.
 
 The design notes in [`docs/`](docs/) record what was measured and why each
 decision went the way it did.
 
 ## Licence
 
-[Academic Free License 3.0](LICENSE), the licence PrestaShop core and most
-modules use. You can modify it, redistribute it, and sell it, as long as the
-copyright notice stays.
+[Academic Free License 3.0](LICENSE), the licence most PrestaShop modules use.
+(PrestaShop core itself is OSL-3.0.) You can modify it, redistribute it, and
+sell it, as long as the copyright notice stays.
 
 Copyright (c) 2026 Mateusz Bartocha
