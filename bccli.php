@@ -28,7 +28,7 @@ class Bccli extends Module
     {
         $this->name = 'bccli';
         $this->tab = 'administration';
-        $this->version = '1.1.0';
+        $this->version = '1.1.1';
         $this->author = 'Mateusz Bartocha';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array('min' => '8.0.0', 'max' => _PS_VERSION_);

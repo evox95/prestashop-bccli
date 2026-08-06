@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-08-06
+
+### Fixed
+- `prestashop:feature-flag` failed on PrestaShop 8.0/8.1 with a raw
+  `ServiceNotFoundException` for
+  `PrestaShopBundle\Entity\Repository\FeatureFlagRepository`: that build
+  registers the same repository under a different service id
+  (`prestashop.core.admin.feature_flag.repository`), not under its own FQCN
+  the way PrestaShop 8.2 does. `FeatureFlagManager` now tries the service id
+  first and falls back to resolving the identical repository through
+  `doctrine.orm.entity_manager` (public on every 8.x this module targets)
+  when the id is not registered, and raises this module's own
+  `UnsupportedPlatformException` - never a raw `ServiceNotFoundException` -
+  if neither is available.
+
 ## [1.1.0] - 2026-08-06
 
 ### Added
