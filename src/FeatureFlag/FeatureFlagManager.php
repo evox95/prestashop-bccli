@@ -113,12 +113,23 @@ class FeatureFlagManager
             $repository->disable($flagName);
         }
 
+        // The toggle above is already committed at this point - everything
+        // from here on is best-effort cache maintenance: the toggle itself
+        // has already succeeded no matter what happens next. See
+        // clearCompiledCache()'s docblock for why this is a plain,
+        // synchronous, in-process call rather than deferred (as an earlier
+        // version of this fix did) - it only ever touches PSR-6 cache
+        // pools, never the compiled DI container directory, so there is
+        // nothing left for Symfony's own post-command lifecycle - or any
+        // other concurrently running process sharing the same cache
+        // directory - to trip over.
         try {
-            $this->clearRoutingCache();
-        } catch (\Exception $e) {
+            $this->clearCompiledCache();
+        } catch (\Throwable $e) {
             throw new \RuntimeException(sprintf(
-                'Feature flag "%s" was %s, but clearing the routing cache failed (%s). Legacy routes '
-                . 'gated by this flag may not reflect the change until the cache is cleared.',
+                'Feature flag "%s" was %s, but the routing cache could not be cleared (%s). '
+                . 'Legacy routes gated by this flag may not reflect the change until "php bin/console '
+                . 'cache:clear" is run manually.',
                 $flagName,
                 $enabled ? 'enabled' : 'disabled',
                 $e->getMessage()
@@ -217,55 +228,105 @@ class FeatureFlagManager
      * core's own FeatureFlagsFormDataProvider::setData() clears after every
      * flag change ("Clear cache of legacy routes since they can depend on an
      * associated feature flag when the attribute `_legacy_feature_flag` is
-     * used" - its own comment). Skipping this would be exactly the trap a
-     * feature-flag toggle command must not set: the row changes, but a route
-     * gated on the old state keeps resolving the old way in production,
-     * where RoutingCacheKeyGenerator's key never changes on its own (per its
-     * own docblock: "you need to use cache:clear if you need to update the
-     * cache").
+     * used" - its own comment, read in full on the live shop). Skipping this
+     * would be exactly the trap a feature-flag toggle command must not set:
+     * the row changes, but a route gated on the old state keeps resolving
+     * the old way in production, where RoutingCacheKeyGenerator's key never
+     * changes on its own (per its own docblock: "you need to use cache:clear
+     * if you need to update the cache").
      *
-     * The service that does this narrowly (CacheProvider::clearCache(), via
-     * the prestashop.bundle.routing.converter.cache_provider id) is declared
-     * private in PrestaShopBundle's own service definitions, and so are its
-     * two constructor dependencies - confirmed empirically: fetching any of
-     * the three from a live container throws ServiceNotFoundException, not
-     * just by reading the yaml. Reimplementing its cache-key algorithm here
-     * would require duplicating RoutingCacheKeyGenerator's exact
-     * environment-dependent logic and staying in sync with it, so instead
-     * this runs the same `cache:clear` console command that core's own
-     * PrestaShopBundle\Service\Command\AbstractCommand::addCacheClear() runs
-     * for the same "a change needs to be visible immediately" reason
-     * elsewhere in core.
+     * This went through two unsafe attempts before landing here. Both are
+     * kept in this docblock because the exact failure each one reproduced is
+     * why the final approach looks the way it does:
      *
-     * This clears more than the one routing-cache entry - it is not as
-     * surgical as CacheProvider::clearCache() itself - but it is core's own
-     * precedented tool for this job, and it was confirmed empirically, not
-     * assumed: an item written into the underlying "cache.app" pool (what the
-     * private cache alias resolves to - also confirmed via debug:container)
-     * was gone after this exact command ran, checked through a freshly booted
-     * kernel/container so no in-memory copy could hide a stale on-disk cache.
+     * 1. Running the `cache:clear` console command in-process, the way
+     *    core's own PrestaShopBundle\Service\Command\AbstractCommand::
+     *    addCacheClear() does (read in full while diagnosing this - its
+     *    execute() runs every queued command, cache:clear included, through
+     *    the same `$this->application->run($input, $output)` call this
+     *    class used to make too). Unsafe because
+     *    Symfony\Bundle\FrameworkBundle\Command\CacheClearCommand::execute()
+     *    (also read in full) ultimately replaces the compiled-container
+     *    directory (var/cache/{env}/ContainerXXXX/) the CURRENTLY RUNNING
+     *    kernel's container was itself loaded from - warmed into a sibling
+     *    directory first and swapped in via rename(), which narrows but does
+     *    not close the window for a container that, unlike the freshly
+     *    warmed one, is already loaded in THIS process's memory and may
+     *    still lazily `require` a not-yet-instantiated private service's
+     *    file. Reproduced live on PS 8.2.7 (mking-secscan-ps-1): four
+     *    toggles in a row against one warm cache, the fourth failed exactly
+     *    this way (`getSwiftmailer_EmailSender_ListenerService.php: Failed
+     *    to open stream`) with the DB row already showing the new state.
      *
-     * @throws \RuntimeException
+     * 2. Deleting the compiled-cache directory's contents directly (not via
+     *    the command), deferred to PHP's shutdown sequence via
+     *    register_shutdown_function() so the deletion could not possibly run
+     *    before Symfony's own post-command ConsoleEvents::TERMINATE dispatch
+     *    (confirmed as the true trigger: an earlier, non-deferred version of
+     *    this same deletion crashed the very FIRST toggle, not just the
+     *    fourth, with the identical signature - console.terminate fires
+     *    after Command::execute() returns to Symfony's OWN outer
+     *    Application, so nothing running inside execute() can ever be
+     *    "after" it). Deferring past that boundary did fix the original
+     *    reproduction (verified live: four separate-process toggles, each
+     *    exit 0 with 0 bytes of stderr). But var/cache/{env}/ is shared,
+     *    on-disk state, not scoped to one process - deleting it from this
+     *    process's shutdown callback can, and did, corrupt a DIFFERENT,
+     *    concurrently running process's own already-booted container.
+     *    Reproduced live: a subprocess-based integration test run (four
+     *    toggles, each deleting the directory at its own shutdown) crashed
+     *    an unrelated test file running later in the SAME outer test-runner
+     *    process, with the same require()-failure signature but for a
+     *    different lazily-resolved service
+     *    (getTranslation_Loader_PhpService.php). That is a realistic
+     *    production hazard, not a test artifact: a cron run of this command
+     *    can just as easily delete the directory out from under a live
+     *    PHP-FPM worker mid-request.
+     *
+     * The actual fix does not touch the compiled-container directory at
+     * all. Core's own FeatureFlagsFormDataProvider reaches
+     * PrestaShopBundle\Routing\Converter\CacheProvider::clearCache(), which
+     * (read in full) does exactly one thing:
+     * `$cache->deleteItem($cacheKeyGenerator->getCacheKey())` on a PSR-6
+     * pool. That exact service is private
+     * (config/services/bundle/routing.yml:
+     * prestashop.bundle.routing.converter.cache_provider has no `public:
+     * true`) - confirmed live, fetching it by id throws
+     * ServiceNotFoundException - and its cache-key computation is
+     * environment-dependent internal logic
+     * (RoutingCacheKeyGenerator::getCacheKey(), also read in full) this
+     * module has no business reimplementing.
+     *
+     * Symfony's own public, stable "cache_clearer" service
+     * (Symfony\Component\HttpKernel\CacheClearer\ChainCacheClearer, tag
+     * kernel.cache_clearer) is used instead. Read in full together with the
+     * Psr6CacheClearer it chains to: both operate exclusively on PSR-6 pool
+     * adapters via ->clear() - never on the compiled-container directory,
+     * confirmed live by calling it and observing getCacheDir()'s
+     * "ContainerXXXX" entry untouched afterward. cache.app - the pool
+     * CacheProvider is itself wired to
+     * (prestashop.bundle.routing.converter.cache aliases
+     * Symfony\Component\Cache\Adapter\AdapterInterface, and cache.app is the
+     * concrete FilesystemAdapter behind it, confirmed live) - is one of the
+     * pools this clears, so the same routing-cache entry is invalidated,
+     * just via a coarser whole-pool sweep instead of one targeted key
+     * delete. A PSR-6 pool is contractually required to degrade a
+     * missing/cleared entry to a cache miss and recompute, never a fatal
+     * require() failure - unlike the compiled container's generated class
+     * files, which is the actual root of both failures above. That contract
+     * is what makes this safe to call synchronously, inline, immediately
+     * after the toggle commits, with no register_shutdown_function()
+     * deferral needed: verified live at ~0.02s per call, no exception, and
+     * safe under the same four-consecutive-toggle reproduction that broke
+     * both earlier attempts.
+     *
+     * @throws \Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException
+     * @throws \Throwable anything the clearer itself throws
      */
-    private function clearRoutingCache()
+    private function clearCompiledCache()
     {
-        $application = new \Symfony\Bundle\FrameworkBundle\Console\Application($this->kernel());
-        $application->setAutoExit(false);
-
-        // Symfony's Application::run() catches internal command exceptions
-        // and turns them into a non-zero exit code rather than letting them
-        // propagate, so the exit code - not a try/catch alone - is what
-        // actually detects a failed clear here.
-        $exitCode = $application->run(
-            new \Symfony\Component\Console\Input\ArrayInput(array(
-                'command' => 'cache:clear',
-                '--no-warmup' => true,
-            )),
-            new \Symfony\Component\Console\Output\NullOutput()
-        );
-
-        if (0 !== $exitCode) {
-            throw new \RuntimeException(sprintf('cache:clear exited with code %d', $exitCode));
-        }
+        $container = $this->kernel()->getContainer();
+        $clearer = $container->get('cache_clearer');
+        $clearer->clear($this->kernel()->getCacheDir());
     }
 }
