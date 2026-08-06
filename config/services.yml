@@ -3,3 +3,8 @@ services:
         class: Bccli\Command\RegenerateThumbnailsCommand
         tags:
             - { name: 'console.command' }
+
+    bccli.command.search_index:
+        class: Bccli\Command\SearchIndexCommand
+        tags:
+            - { name: 'console.command' }

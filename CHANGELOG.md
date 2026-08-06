@@ -3,6 +3,18 @@
 All notable changes to this project are documented in this file.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-08-06
+
+### Added
+- `prestashop:search:index` console command for PrestaShop 8.x, matching the
+  interface PrestaShop 9.1 provides natively (`--full`, `--shop-id`,
+  `--shop-group-id`, `--product-id`). Withdraws itself when PrestaShop 9's own
+  command is present.
+- Guard against `--full` combined with `--shop-group-id`: core's
+  `Search::indexation()` truncates the *entire* installation's search index in
+  that combination, not just the given group, so this option pairing is
+  rejected outright rather than silently doing something dangerous.
+
 ## [1.0.1] - 2026-08-05
 
 First published release. Same functionality as 1.0.0, which was never

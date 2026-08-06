@@ -1,15 +1,16 @@
 # bccli
 
-Backports PrestaShop 9's `prestashop:thumbnails:regenerate` console command to
-PrestaShop 8.x, so large catalogues can finish regenerating image thumbnails
-without hitting a web request's execution time limit.
+Backports two of PrestaShop 9's console commands to PrestaShop 8.x, with the
+same names and options, so a crontab entry keeps working unchanged across an
+8 → 9 upgrade:
 
-A console command for PrestaShop 8.x that regenerates product, category,
-manufacturer, supplier and store image thumbnails — the same job as
-**Design → Images → Regenerate thumbnails** in the back office, run from the
-command line instead.
+- `prestashop:thumbnails:regenerate` — regenerates product, category,
+  manufacturer, supplier and store image thumbnails without hitting a web
+  request's execution time limit.
+- `prestashop:search:index` — rebuilds the front office search index without
+  going through the back office's **Preferences → Search** page.
 
-## The problem
+## The thumbnails problem
 
 The back office regeneration page runs inside a normal HTTP request, so it is
 bound by PHP's `max_execution_time`. On a catalogue of any size that limit is
@@ -25,9 +26,7 @@ thumbnails total):
 | CLI, no effective time limit | completed in 175 s, 0 errors, all 5000 thumbnails written |
 
 PrestaShop 9.1 fixed this by shipping `prestashop:thumbnails:regenerate` as a
-core console command. **bccli backports that same command to PrestaShop 8.x**,
-with the same name and arguments, so a crontab entry keeps working unchanged
-across an 8 → 9 upgrade.
+core console command, and bccli backports that same command to PrestaShop 8.x.
 
 ## Requirements
 
@@ -35,9 +34,10 @@ across an 8 → 9 upgrade.
   point releases are expected to work but are not verified.
 - PHP 7.2.5 or later - PrestaShop 8.0's own minimum supported PHP version.
 
-**PrestaShop 9.x already ships this command natively.** Installing bccli
-there is harmless — the module detects the native command and withdraws its
-own — but pointless, since there is nothing left for it to add.
+**PrestaShop 9.x already ships both commands natively.** Installing bccli
+there is harmless — each command detects its native PrestaShop 9 counterpart
+and withdraws itself — but pointless, since there is nothing left for it to
+add.
 
 ## Installation
 
@@ -58,7 +58,7 @@ Either way, install the module from **Modules → Module Manager** (search for
 "BC CLI") once the files are in place. Installation adds no database tables
 and registers no hooks — there is nothing to configure.
 
-## Usage
+## Usage: thumbnail regeneration
 
 ```
 php bin/console prestashop:thumbnails:regenerate <image> [<image-type>] [-d|--delete] [-v]
@@ -122,15 +122,69 @@ regardless of which domain is selected. Since this module's goal is interface
 parity with PrestaShop 9, it follows PrestaShop 9's behaviour — this is the
 one place it deliberately does not match the PrestaShop 8 back office.
 
+## Usage: search indexing
+
+```
+php bin/console prestashop:search:index [-f|--full] [-s|--shop-id ID] [-g|--shop-group-id ID] [-p|--product-id ID]
+```
+
+| Option | Meaning |
+|---|---|
+| `-f`, `--full` | rebuild the whole index instead of only not-yet-indexed products |
+| `-s`, `--shop-id` | limit the run to one shop |
+| `-g`, `--shop-group-id` | limit the run to one shop group |
+| `-p`, `--product-id` | index a single product; forces `--full` off, matching core's own `Search::indexation()` |
+
+`--full` combined with `--shop-group-id` is refused: PrestaShop core's
+`Search::indexation()` only scopes a full rebuild to one shop group when the
+current shop context is a single shop (`Shop::CONTEXT_SHOP`); anything wider,
+including a shop-group context, truncates the search index for the **entire**
+installation, not just the given group. Combine `--full` with `--shop-id`
+instead, or omit `--full` to only index not-yet-indexed products across the
+group.
+
+Examples:
+
+```bash
+# Rebuild the whole search index for shop 1.
+php bin/console prestashop:search:index --full --shop-id=1
+
+# Index only products that are not indexed yet, across every shop.
+php bin/console prestashop:search:index
+
+# Reindex a single product.
+php bin/console prestashop:search:index --product-id=42
+```
+
+### Output is silent on success
+
+Same contract as thumbnail regeneration: a successful run without `-v` writes
+zero bytes to both stdout and stderr and exits `0`; a failing run (including
+an invalid option combination) always writes a short message to stderr and
+exits `1`, whether or not `-v` or `-q` was passed. Overlapping runs of this
+command are excluded on the same best-effort `flock()` basis — a second
+invocation while one is already running exits `0` having done nothing.
+
+### Cron example
+
+```cron
+# Rebuild the search index every night at 03:41. Silent unless something fails.
+41 3 * * * /usr/bin/php /var/www/html/bin/console prestashop:search:index --full
+```
+
 ## Multistore
 
-Multistore is out of scope for v1. Image *files* are shared across all shops
-in a PrestaShop installation, but image *format settings* (which sizes are
-generated, at what dimensions) are configured per shop. A correct multistore
-implementation needs to decide which shop's format configuration to run
-against and is left for a future version. v1 runs against the default shop
-context PrestaShop establishes at bootstrap — the same context a plain
-`bin/console` invocation always gets.
+**Thumbnail regeneration** is out of scope for multistore in v1. Image
+*files* are shared across all shops in a PrestaShop installation, but image
+*format settings* (which sizes are generated, at what dimensions) are
+configured per shop. A correct multistore implementation needs to decide
+which shop's format configuration to run against and is left for a future
+version. v1 runs against the default shop context PrestaShop establishes at
+bootstrap — the same context a plain `bin/console` invocation always gets.
+
+**Search indexing** honours `--shop-id` and `--shop-group-id` directly, since
+`Search::indexation()` already scopes its work by the current shop context —
+there was no equivalent gap to leave open here.
 
 ## Known limitations inherited from core
 
