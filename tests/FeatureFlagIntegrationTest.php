@@ -91,6 +91,66 @@ $repositoryMechanism = $kernel->getContainer()->has(FeatureFlagManager::REPOSITO
         ? 'doctrine.orm.entity_manager fallback'
         : 'neither the service id nor doctrine.orm.entity_manager is available');
 
+// --- shared infra for every genuine-subprocess check in this file ----------
+// Hoisted here (rather than defined once at first use, as an earlier version
+// of this file did) because the very first single-toggle check below now
+// needs it too, not just the consecutive-toggle loop and the cache-pool
+// probe further down. Mirrors the admin-dir bootstrap trick this suite's own
+// run-integration.php uses (config.inc.php routes through
+// smartyfront.config.inc.php otherwise, which loads module files and can die
+// on a broken module elsewhere in the shop), plus the same kernel-
+// construction fallback FeatureFlagManager::kernel() documents and uses
+// internally. Debug is forced off to match how a real cron invocation runs
+// (and to match the non-debug container class named in the original live
+// crash report - the debug container variant wires additional event logging
+// that would swamp stderr independently of anything this module does,
+// defeating any "zero bytes on success" assertion for reasons unrelated to
+// whatever bug is actually being tested).
+$consecutivePsRoot = defined('_PS_ROOT_DIR_') ? _PS_ROOT_DIR_ : (getenv('PS_ROOT') ?: '/var/www/html');
+$consecutiveModuleAutoload = __DIR__ . '/../vendor/autoload.php';
+
+$consecutiveProbeTemplate = <<<'PROBE'
+<?php
+$root = '__PS_ROOT__';
+foreach (glob($root . '/admin*') as $candidate) {
+    if (is_dir($candidate) && file_exists($candidate . '/bootstrap.php')) {
+        define('_PS_ADMIN_DIR_', $candidate);
+        break;
+    }
+}
+if (!defined('_PS_ADMIN_DIR_')) {
+    fwrite(STDERR, "no admin directory found under $root\n");
+    exit(2);
+}
+
+require_once $root . '/config/config.inc.php';
+require_once '__MODULE_AUTOLOAD__';
+
+if (!class_exists('AppKernel', false)) {
+    require_once $root . '/app/AppKernel.php';
+}
+
+$kernel = new AppKernel(defined('_PS_ENV_') ? _PS_ENV_ : 'prod', false);
+$kernel->boot();
+
+$command = new \Bccli\Command\FeatureFlagCommand();
+$application = new \Symfony\Bundle\FrameworkBundle\Console\Application($kernel);
+$application->add($command);
+$application->setDefaultCommand($command->getName(), true);
+$application->setAutoExit(true);
+
+$argv = $_SERVER['argv'];
+array_shift($argv);
+array_unshift($argv, 'probe.php');
+$application->run(new \Symfony\Component\Console\Input\ArgvInput($argv));
+PROBE;
+
+$consecutiveProbeScript = str_replace(
+    array('__PS_ROOT__', '__MODULE_AUTOLOAD__'),
+    array($consecutivePsRoot, $consecutiveModuleAutoload),
+    $consecutiveProbeTemplate
+);
+
 $manager = new FeatureFlagManager();
 $threw = false;
 $flags = array();
@@ -137,6 +197,81 @@ foreach ($manager->listFlags() as $flag) {
     }
 }
 bccli_assert_same($flippedState, $afterFlip, 'the flag\'s state actually changed - read back independently, not trusted from setState() itself');
+
+// --- prove the toggle survived process death, not just entity-manager ------
+// --- staleness (regression test for the PS 8.0/8.1 non-persisting bug) -----
+//
+// The same-process read-back just above is not the whole story: a same-
+// process read can be satisfied by an in-memory FeatureFlag entity that was
+// mutated but never actually flushed to the database. That is exactly what
+// PrestaShop 8.0/8.1's own FeatureFlagRepository::enable()/disable() used to
+// leave this module trusting - see FeatureFlagManager::entityManager()'s own
+// docblock for the full enable()/disable() 8.0-vs-8.2 source comparison
+// (8.2 flushes, 8.0/8.1 mutate the entity and stop). This suite passed on
+// PS 8.2 (where the repository itself calls flush()) while the identical
+// code this file exercises silently wrote nothing on PS 8.0 - a same-
+// process check like $afterFlip above cannot tell "written to the row"
+// apart from "mutated in memory, never written", because both look
+// identical from inside the same process's own EntityManager, no matter how
+// many times it re-reads. A genuinely separate OS process has no access to
+// this process's identity map or any unflushed change at all - it can only
+// observe what actually reached the row - so it is the one read-back an
+// unflushed mutation cannot fool.
+$freshProcessProbePath = tempnam(sys_get_temp_dir(), 'bccli-ff-fresh') . '.php';
+file_put_contents($freshProcessProbePath, $consecutiveProbeScript);
+
+$freshProcessCommandLine = implode(' ', array(
+    escapeshellarg(PHP_BINARY),
+    escapeshellarg($freshProcessProbePath),
+    escapeshellarg('list'),
+));
+
+$freshProcessPipes = array();
+$freshProcessHandle = proc_open(
+    $freshProcessCommandLine,
+    array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+    $freshProcessPipes
+);
+
+bccli_assert(is_resource($freshProcessHandle), 'the fresh-process read-back subprocess starts');
+
+$freshProcessState = null;
+if (is_resource($freshProcessHandle)) {
+    fclose($freshProcessPipes[0]);
+    $freshProcessStdout = stream_get_contents($freshProcessPipes[1]);
+    $freshProcessStderr = stream_get_contents($freshProcessPipes[2]);
+    fclose($freshProcessPipes[1]);
+    fclose($freshProcessPipes[2]);
+    $freshProcessExitCode = proc_close($freshProcessHandle);
+
+    bccli_assert_same(
+        0,
+        $freshProcessExitCode,
+        'the fresh-process "list" read-back exits 0'
+            . ($freshProcessExitCode !== 0 ? ' - stderr: ' . $freshProcessStderr : '')
+    );
+
+    // list always prints a table (see FeatureFlagCommand's own class
+    // docblock: "list is the one documented exception" to the silent-on-
+    // success contract every other action in this file relies on), so this
+    // parses stdout for the exact row belonging to $targetName rather than
+    // expecting silence.
+    foreach (preg_split('/\r\n|\r|\n/', $freshProcessStdout) as $line) {
+        if (preg_match('/^' . preg_quote($targetName, '/') . '\s+(enabled|disabled)\s*$/', $line, $matches)) {
+            $freshProcessState = ('enabled' === $matches[1]);
+            break;
+        }
+    }
+}
+
+bccli_assert_same(
+    $flippedState,
+    $freshProcessState,
+    'the flag\'s state actually changed, read back through a genuinely fresh OS process (not just a fresh entity manager) - '
+        . 'the one check an unflushed in-memory mutation cannot fool'
+);
+
+@unlink($freshProcessProbePath);
 
 // Restore before asserting anything else, so a failure below never leaves a
 // shared dev shop's flag in the flipped state.
@@ -223,61 +358,10 @@ $consecutiveTargetName = $flags[0]['name'];
 $consecutiveOriginalState = $flagsByName[$consecutiveTargetName];
 $consecutiveState = $consecutiveOriginalState;
 
-$consecutivePsRoot = defined('_PS_ROOT_DIR_') ? _PS_ROOT_DIR_ : (getenv('PS_ROOT') ?: '/var/www/html');
-$consecutiveModuleAutoload = __DIR__ . '/../vendor/autoload.php';
-
-// Mirrors the admin-dir bootstrap trick this suite's own run-integration.php
-// uses (config.inc.php routes through smartyfront.config.inc.php otherwise,
-// which loads module files and can die on a broken module elsewhere in the
-// shop), plus the same kernel-construction fallback
-// FeatureFlagManager::kernel() documents and uses internally. Debug is
-// forced off to match how a real cron invocation runs (and to match the
-// non-debug container class named in the original live crash report - the
-// debug container variant wires additional event logging that would swamp
-// stderr independently of anything this module does, defeating the "zero
-// bytes on success" assertion below for reasons unrelated to the bug).
-$consecutiveProbeTemplate = <<<'PROBE'
-<?php
-$root = '__PS_ROOT__';
-foreach (glob($root . '/admin*') as $candidate) {
-    if (is_dir($candidate) && file_exists($candidate . '/bootstrap.php')) {
-        define('_PS_ADMIN_DIR_', $candidate);
-        break;
-    }
-}
-if (!defined('_PS_ADMIN_DIR_')) {
-    fwrite(STDERR, "no admin directory found under $root\n");
-    exit(2);
-}
-
-require_once $root . '/config/config.inc.php';
-require_once '__MODULE_AUTOLOAD__';
-
-if (!class_exists('AppKernel', false)) {
-    require_once $root . '/app/AppKernel.php';
-}
-
-$kernel = new AppKernel(defined('_PS_ENV_') ? _PS_ENV_ : 'prod', false);
-$kernel->boot();
-
-$command = new \Bccli\Command\FeatureFlagCommand();
-$application = new \Symfony\Bundle\FrameworkBundle\Console\Application($kernel);
-$application->add($command);
-$application->setDefaultCommand($command->getName(), true);
-$application->setAutoExit(true);
-
-$argv = $_SERVER['argv'];
-array_shift($argv);
-array_unshift($argv, 'probe.php');
-$application->run(new \Symfony\Component\Console\Input\ArgvInput($argv));
-PROBE;
-
-$consecutiveProbeScript = str_replace(
-    array('__PS_ROOT__', '__MODULE_AUTOLOAD__'),
-    array($consecutivePsRoot, $consecutiveModuleAutoload),
-    $consecutiveProbeTemplate
-);
-
+// $consecutivePsRoot / $consecutiveModuleAutoload / $consecutiveProbeTemplate /
+// $consecutiveProbeScript are defined once, near the top of this file (the
+// single-toggle fresh-process check there needs the same subprocess infra
+// this loop does).
 $consecutiveProbePath = tempnam(sys_get_temp_dir(), 'bccli-ff-probe') . '.php';
 file_put_contents($consecutiveProbePath, $consecutiveProbeScript);
 
@@ -505,20 +589,22 @@ bccli_assert(
 // EntityManager has no way to know that happened. $manager's repository
 // still holds whatever FeatureFlag object it last loaded or mutated
 // in-process (the "restore after consecutive-toggle" section above, already
-// sitting at $cachePoolOriginalState), and FeatureFlagRepository::enable()/
-// disable() (core code, read in full) fetch that same already-managed
-// object via findOneBy(), mutate it in memory, then flush() - Doctrine's
-// flush() diffs the entity's current in-memory value against its own
-// originalEntityData snapshot, not against the real row, so asking it to set
-// a value the stale object already holds produces an empty changeset and no
-// UPDATE at all, silently leaving the row at $cachePoolFlippedState. Clearing
-// the identity map first forces setState()'s internal getByName() to issue a
-// genuinely fresh SELECT, so it sees the subprocess's write and actually
-// detects a change to make. This is the exact same staleness the
-// consecutive-toggle loop's own comment documents and the loop already
-// guards against on every read-back - the gap here was that this section
-// only cleared before the read-back below, not before this restore call,
-// which is the one that actually needs to observe the subprocess's write.
+// sitting at $cachePoolOriginalState), and setState()'s own getByName() call
+// (repository::getByName(), core code, read in full) fetches that same
+// already-managed object via findOneBy() rather than issuing a fresh SELECT
+// - Doctrine's identity map hands back the existing in-memory object as-is.
+// setState() then mutates that stale object and flush()es it: flush() diffs
+// the entity's current in-memory value against its own originalEntityData
+// snapshot, not against the real row, so asking it to set a value the stale
+// object already holds produces an empty changeset and no UPDATE at all,
+// silently leaving the row at $cachePoolFlippedState. Clearing the identity
+// map first forces getByName() to issue a genuinely fresh SELECT, so it sees
+// the subprocess's write and actually detects a change to make. This is the
+// exact same staleness the consecutive-toggle loop's own comment documents
+// and the loop already guards against on every read-back - the gap here was
+// that this section only cleared before the read-back below, not before
+// this restore call, which is the one that actually needs to observe the
+// subprocess's write.
 $consecutiveEntityManager->clear();
 
 // Restore the flag this probe toggled, the same way every other section in

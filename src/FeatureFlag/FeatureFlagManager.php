@@ -49,11 +49,19 @@ namespace Bccli\FeatureFlag;
  * repository() used to make, unreproducible locally because the only
  * reachable shop for manual verification runs 8.2.7.
  *
- * getByName() returns null rather than throwing on an unknown name, and
- * enable()/disable() silently no-op when the flag does not exist (verified by
- * reading FeatureFlagRepository's own source) - so this class always looks
- * the flag up itself first and turns a miss into UnknownFeatureFlagException,
- * rather than letting an unknown name pass through as a silent no-op.
+ * getByName() returns null rather than throwing on an unknown name (verified
+ * by reading FeatureFlagRepository's own source) - so this class always
+ * looks the flag up itself first and turns a miss into
+ * UnknownFeatureFlagException, rather than letting an unknown name pass
+ * through silently.
+ *
+ * setState() sets the entity's state itself
+ * ($flag->enable()/$flag->disable(), not
+ * $repository->enable($name)/disable($name)) and persists it through
+ * entityManager() directly, rather than calling the repository's own
+ * enable()/disable() and trusting those to write to the database - see
+ * entityManager()'s docblock for why that trust is not safe on every 8.x
+ * version this module targets.
  *
  * This command has no constructor-injected services (matching every other
  * command in this module, and config/services.yml's plain
@@ -108,6 +116,10 @@ class FeatureFlagManager
     }
 
     /**
+     * Sets a flag's state and persists it ourselves - see entityManager()'s
+     * docblock for why this class never trusts
+     * FeatureFlagRepository::enable()/disable() to do that on our behalf.
+     *
      * @param string $flagName
      * @param bool $enabled
      *
@@ -126,10 +138,22 @@ class FeatureFlagManager
         }
 
         if ($enabled) {
-            $repository->enable($flagName);
+            $flag->enable();
         } else {
-            $repository->disable($flagName);
+            $flag->disable();
         }
+
+        // Persist ourselves rather than trusting $repository's own
+        // enable()/disable() to have done it - see entityManager()'s
+        // docblock. $flag came from $repository->getByName(), i.e. from a
+        // Doctrine find*() call, so it is already a managed entity on this
+        // same EntityManager; persist() on an already-managed entity is a
+        // safe no-op (confirmed by reading UnitOfWork::persist()) and is
+        // kept here only to mirror core's own FeatureFlagRepository::
+        // enable()/disable() exactly, in case that ever stops being true.
+        $em = $this->entityManager();
+        $em->persist($flag);
+        $em->flush();
 
         // The toggle above is already committed at this point - everything
         // from here on is best-effort cache maintenance: the toggle itself
@@ -231,6 +255,76 @@ class FeatureFlagManager
         throw new UnsupportedPlatformException(
             'Neither the ' . self::REPOSITORY_SERVICE . ' service nor doctrine.orm.entity_manager '
             . 'is available in this container - prestashop:feature-flag cannot run here.'
+        );
+    }
+
+    /**
+     * Returns the Doctrine entity manager, so setState() can persist a flag
+     * change itself instead of trusting
+     * PrestaShopBundle\Entity\Repository\FeatureFlagRepository::enable()/
+     * disable() to do it.
+     *
+     * That trust turned out to be misplaced on PrestaShop 8.0: reading that
+     * repository's own source at both tags shows enable()/disable() flush
+     * on 8.2 but NOT on 8.0/8.1 -
+     *
+     *   // 8.0.5 - src/PrestaShopBundle/Entity/Repository/
+     *   // FeatureFlagRepository.php
+     *   public function enable(string $featureFlagName): void
+     *   {
+     *       $featureFlag = $this->getByName($featureFlagName);
+     *       if (null !== $featureFlag) {
+     *           $featureFlag->enable();          // in-memory only, dies
+     *       }                                    // with the process
+     *   }
+     *
+     *   // 8.2.7 - same method (confirmed live on mking-secscan-ps-1)
+     *       $featureFlag->enable();
+     *       $this->getEntityManager()->persist($featureFlag);
+     *       $this->getEntityManager()->flush();
+     *
+     * - so on 8.0/8.1 a toggle exits 0, updates nothing, and any read-back
+     * in the SAME request/process can still look correct because the
+     * in-memory entity was mutated even though nothing reached the
+     * database; only a genuinely separate process (a fresh EntityManager,
+     * fresh identity map) reveals the row never changed. This affects both
+     * enable() and disable() identically; only enable() surfaced in CI
+     * because flags start disabled, so a no-op disable() looks like success
+     * by coincidence. FeatureFlagRepository::getEntityManager() itself
+     * cannot be called from here to route around this - reading
+     * vendor/doctrine/orm's own EntityRepository class (installed at
+     * 2.12.1 on mking-secscan-ps-1) shows that method is `protected`, not
+     * public, so it is only reachable from inside the repository class
+     * itself, not from this manager.
+     *
+     * doctrine.orm.entity_manager is safe to resolve directly, independent
+     * of which of repository()'s two mechanisms actually served
+     * $repository: it is a single aliased service in the container
+     * (confirmed public on every PrestaShop 8.x this module targets - see
+     * repository()'s own docblock for the doctrine-bundle 2.6.3 source
+     * citation), so $repository->getByName()'s Doctrine identity map and
+     * the entity manager resolved here are always the same instance,
+     * whether $repository came from the direct FQCN service (itself only a
+     * thin `factory: ['@doctrine.orm.default_entity_manager',
+     * getRepository]` wrapper around that same manager - confirmed by
+     * reading repository.yml) or from the entity-manager fallback path
+     * directly.
+     *
+     * @return \Doctrine\ORM\EntityManagerInterface
+     *
+     * @throws UnsupportedPlatformException
+     */
+    private function entityManager()
+    {
+        $container = $this->kernel()->getContainer();
+
+        if ($container->has('doctrine.orm.entity_manager')) {
+            return $container->get('doctrine.orm.entity_manager');
+        }
+
+        throw new UnsupportedPlatformException(
+            'doctrine.orm.entity_manager is not available in this container - '
+            . 'prestashop:feature-flag cannot run here.'
         );
     }
 

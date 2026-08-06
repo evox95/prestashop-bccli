@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-08-06
+
+### Fixed
+- `prestashop:feature-flag enable`/`disable` silently wrote nothing to the
+  database on PrestaShop 8.0/8.1: core's own
+  `FeatureFlagRepository::enable()`/`disable()` mutate the entity in memory
+  and call `persist()`/`flush()` on PrestaShop 8.2, but on 8.0/8.1 they only
+  mutate the entity - the change dies with the process. `FeatureFlagManager`
+  no longer trusts those methods to persist; it now sets the entity's state
+  itself and flushes through `doctrine.orm.entity_manager` directly, which
+  is correct on every PrestaShop 8.x version this module targets.
+- 1.1.1 never released (the release workflow saw no version change on the
+  push that merged it), so this is the first release carrying both the
+  8.0/8.1 repository-service-id fix and this persistence fix.
+
 ## [1.1.1] - 2026-08-06
 
 ### Fixed
