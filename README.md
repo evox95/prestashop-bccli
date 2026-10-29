@@ -85,9 +85,10 @@ Use `--delete` after changing an image type's dimensions: core otherwise skips
 thumbnails that already exist. The ID selects a format, not a product; all
 product images are processed for that format.
 
-On PrestaShop 1.7.8.11, core deletes only the selected format's `.jpg` files.
-Unlike 8.x, it leaves `-<format>.webp`, `-<format>.avif`, and `2x` variants in
-place. Regenerate or remove those files separately after a size change; for
+On PrestaShop 1.7.8.11, core deletes only the selected format's `.jpg` files
+and leaves `-<format>.webp`, `-<format>.avif`, and `2x` variants in place.
+PrestaShop 8.0 also removes the `2x` files but still keeps `.webp` and `.avif`;
+only 8.1 and later delete all of them. Regenerate or remove those files separately after a size change; for
 example, a WebP tool that writes only missing files will otherwise keep serving
 the old dimensions. This module preserves that core deletion behaviour.
 

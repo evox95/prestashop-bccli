@@ -293,7 +293,7 @@ it — so "no picture" placeholders are regenerated for every domain, not just
 products. An earlier draft of this spec got that wrong and would have left
 category, manufacturer, supplier and store placeholders stale.
 
-### No legacy context setup is needed
+### No legacy context setup is needed (PrestaShop 8)
 
 **2026-10-29 — PrestaShop 1.7 port:** The observations below apply to the
 original PrestaShop 8 implementation. On PrestaShop 1.7.8.11, `bin/console`
