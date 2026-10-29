@@ -1,6 +1,6 @@
 # bccli
 
-Console commands for PrestaShop 8 that PrestaShop 9 has and 8 doesn't.
+Console commands for PrestaShop 1.7.8 and 8 that PrestaShop 9 provides natively.
 
 If you run a large shop, you have probably watched the back office give up
 half-way through regenerating thumbnails, or through reindexing search after a
@@ -38,11 +38,28 @@ unzip it into your shop's `modules/` directory and install it from the module
 list.
 
 There is nothing to configure and no back office page. Installing it just makes
-the commands available.
+the commands available. If they do not appear in `php bin/console list`, clear
+the Symfony cache for the environment you use, for example:
 
-Requires PrestaShop 8 and PHP 7.2.5 or later. Continuous integration tests it
-against PrestaShop 8.0, 8.1, and 8.2; later 8.x releases are expected to work
-but are unverified. Not on the Addons marketplace.
+```bash
+php bin/console cache:clear --env=prod --no-debug
+```
+
+## Requirements
+
+PrestaShop 1.7.8.x or 8.x, with a PHP version supported by that PrestaShop
+release (PHP 7.1–7.4 for 1.7.8; PHP 7.2.5+ for 8.0, with the upper limit
+depending on the 8.x release). The 1.7 port was verified on PrestaShop 1.7.8.11
+with PHP 7.4. It does not add PHP 8 support to PrestaShop 1.7 itself.
+
+For production scripts, append `--env=prod --no-debug` (or set
+`SYMFONY_ENV=prod`). PrestaShop 1.7 defaults to the development environment;
+at `-v` its Symfony logger can print core deprecation notices on stderr even
+when regeneration succeeds.
+
+The CI matrix covers PrestaShop 1.7.8, 8.0, 8.1, and 8.2; later 8.x releases
+are expected to work but are unverified. Feature flags require PrestaShop 8;
+that command is not registered on 1.7. Not on the Addons marketplace.
 
 ## Commands
 
@@ -57,7 +74,14 @@ php bin/console prestashop:thumbnails:regenerate products
 
 # One image format, deleting old thumbnails first, printing a line per domain
 php bin/console prestashop:thumbnails:regenerate all 3 --delete -v
+
+# Products only, using image type ID 13 (replace it with your shop's format ID)
+php bin/console prestashop:thumbnails:regenerate products 13 --delete -v
 ```
+
+Use `--delete` after changing an image type's dimensions: core otherwise skips
+thumbnails that already exist. The ID selects a format, not a product; all
+product images are processed for that format.
 
 ### Index products for search
 
@@ -78,6 +102,8 @@ would empty the search index for *every* shop in that combination, not just the
 group you named, so the command refuses rather than doing something surprising.
 
 ### Feature flags
+
+Available on PrestaShop 8 only, not on 1.7.
 
 ```bash
 php bin/console prestashop:feature-flag list
@@ -143,15 +169,14 @@ PHP versions, the command you ran, and what happened instead. If a command
 printed something, paste it verbatim.
 
 Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers running the
-tests and the one house rule that surprises people: the source targets PHP 7.1
-syntax on purpose, even though the module needs 7.2.5 to run, so that a
-PrestaShop 1.7 port stays possible.
+tests and the PHP 7.1 syntax rule that keeps the same source compatible with
+PrestaShop 1.7.8 and 8.x.
 
 ## How it works
 
 PrestaShop 9 moved thumbnail regeneration into a service and wrapped it in a
-command. PrestaShop 8 keeps the same logic locked inside `protected` methods of
-a back office controller, with no adapter to reuse.
+command. PrestaShop 1.7 and 8 keep the same logic locked inside `protected`
+methods of a back office controller, with no adapter to reuse.
 
 So this module drives that controller directly instead of reimplementing image
 resizing. The thumbnails it produces are therefore what the back office

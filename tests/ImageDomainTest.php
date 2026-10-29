@@ -50,3 +50,13 @@ bccli_assert_same('_PS_STORE_IMG_DIR_', ImageDomain::constantFor('stores'), 'sto
 
 bccli_assert(ImageDomain::isProduct('products'), 'products is the product domain');
 bccli_assert(!ImageDomain::isProduct('categories'), 'categories is not the product domain');
+
+// PrestaShop 1.7 defines only the legacy product directory constant.
+define('_PS_PROD_IMG_DIR_', '/ps17/img/p/');
+bccli_assert_same('_PS_PROD_IMG_DIR_', ImageDomain::constantFor('products'), 'products resolve the PS 1.7 directory constant');
+$productConstant = ImageDomain::constantFor('products');
+bccli_assert_same('/ps17/img/p/', defined($productConstant) ? constant($productConstant) : null, 'the legacy product directory is usable');
+
+// PrestaShop 8 keeps the legacy alias, but the modern name must still win.
+define('_PS_PRODUCT_IMG_DIR_', '/ps8/img/p/');
+bccli_assert_same('_PS_PRODUCT_IMG_DIR_', ImageDomain::constantFor('products'), 'products prefer the PS 8 constant when both exist');

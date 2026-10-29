@@ -22,12 +22,12 @@ namespace Bccli\Thumbnails;
 /**
  * The only class coupled to PrestaShop core internals.
  *
- * PrestaShop 8 keeps thumbnail regeneration in protected methods of
+ * PrestaShop 1.7 and 8 keep thumbnail regeneration in protected methods of
  * AdminImagesController. PrestaShop 9 extracted that logic into
  * Adapter\ImageThumbnailsRegenerator and exposed it through CQRS, but no such
- * adapter exists in 8.x, so the controller is driven directly.
+ * adapter exists in 1.7/8.x, so the controller is driven directly.
  *
- * Three things must be fixed before the controller works outside a web request:
+ * Four things must be fixed before the controller works outside a web request:
  *
  *  1. $imageFormatConfiguration is injected from the Symfony container in
  *     AdminImagesController::init() (line 101). The container is unavailable in
@@ -37,6 +37,9 @@ namespace Bccli\Thumbnails;
  *     "time() - start_time > max_execution_time - 4", which is true
  *     immediately, so core returns 'timeout' having written nothing.
  *  3. All the regeneration methods are protected.
+ *  4. PS 1.7's bin/console boots the front-office context, with no employee.
+ *     AdminController's constructor dereferences that employee. Supply an empty,
+ *     unauthenticated Employee, never an existing administrator's identity.
  *
  * Constructing the controller also runs core's own Controller::__construct(),
  * which sets Context::getContext()->controller = $this (classes/controller/
@@ -105,8 +108,8 @@ class LegacyControllerBridge
             }
         }
 
-        // Used by formatsFor(), sourceCountFor() and regenerateNoPictureImages().
-        foreach (array('ImageType', 'Image', 'Language') as $class) {
+        // Used by the CLI context, formatsFor(), sourceCountFor() and placeholders.
+        foreach (array('Context', 'Employee', 'ImageType', 'Image', 'Language') as $class) {
             if (!class_exists($class)) {
                 throw new UnsupportedPlatformException(self::message('class ' . $class));
             }
@@ -156,6 +159,11 @@ class LegacyControllerBridge
     public function __construct()
     {
         self::assertSupported();
+
+        $context = \Context::getContext();
+        if ($context->employee === null) {
+            $context->employee = new \Employee();
+        }
 
         $controllerClass = self::CONTROLLER;
         $this->controller = new $controllerClass();

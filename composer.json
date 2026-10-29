@@ -1,6 +1,6 @@
 {
     "name": "bestcoding/bccli",
-    "description": "CLI commands for PrestaShop 8.x",
+    "description": "CLI commands for PrestaShop 1.7.8 and 8.x",
     "license": "AFL-3.0",
     "type": "prestashop-module",
     "authors": [

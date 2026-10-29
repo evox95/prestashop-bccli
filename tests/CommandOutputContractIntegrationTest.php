@@ -178,55 +178,60 @@ PROBE;
 
 // === FeatureFlagCommand ======================================================
 
-bccli_assert(
-    (new FeatureFlagCommand())->isEnabled(),
-    'FeatureFlagCommand::isEnabled() returns true on PrestaShop 8 - core does not ship prestashop:feature-flag yet'
-);
+if (version_compare(_PS_VERSION_, '8.0.0', '>=')) {
+    bccli_assert(
+        (new FeatureFlagCommand())->isEnabled(),
+        'FeatureFlagCommand::isEnabled() returns true on PrestaShop 8 - core does not ship prestashop:feature-flag yet'
+    );
 
-$contractFfManager = new FeatureFlagManager();
-$contractFfFlags = $contractFfManager->listFlags();
-bccli_assert(!empty($contractFfFlags), 'at least one feature flag exists to run the output-contract probe against');
+    $contractFfManager = new FeatureFlagManager();
+    $contractFfFlags = $contractFfManager->listFlags();
+    bccli_assert(!empty($contractFfFlags), 'at least one feature flag exists to run the output-contract probe against');
 
-if (!empty($contractFfFlags)) {
-    // Toggling a flag to its OWN current state is a genuine command
-    // invocation with a genuine (if net-zero) write, not a fixture - it
-    // needs no restore step because it never changes anything observable.
-    $contractFfName = $contractFfFlags[0]['name'];
-    $contractFfAction = $contractFfFlags[0]['state'] ? 'enable' : 'disable';
+    if (!empty($contractFfFlags)) {
+        // Toggling a flag to its OWN current state is a genuine command
+        // invocation with a genuine (if net-zero) write, not a fixture - it
+        // needs no restore step because it never changes anything observable.
+        $contractFfName = $contractFfFlags[0]['name'];
+        $contractFfAction = $contractFfFlags[0]['state'] ? 'enable' : 'disable';
 
-    list($contractFfExit, $contractFfStdout, $contractFfStderr) = bccli_contract_probe_run(
+        list($contractFfExit, $contractFfStdout, $contractFfStderr) = bccli_contract_probe_run(
+            $contractPsRoot,
+            $contractModuleAutoload,
+            FeatureFlagCommand::class,
+            array($contractFfAction, $contractFfName)
+        );
+
+        bccli_assert_same(
+            0,
+            $contractFfExit,
+            'FeatureFlagCommand: a real toggle at default verbosity (no -q, no -v) exits 0'
+                . ($contractFfExit !== 0 ? ' - stderr: ' . $contractFfStderr : '')
+        );
+        bccli_assert_same('', $contractFfStdout, 'FeatureFlagCommand: a successful toggle writes nothing to stdout at default verbosity');
+        bccli_assert_same('', $contractFfStderr, 'FeatureFlagCommand: a successful toggle writes nothing to stderr at default verbosity');
+    }
+
+    $contractFfUnknownName = 'bccli_test_contract_unknown_' . md5(uniqid('', true));
+    list($contractFfFailExit, $contractFfFailStdout, $contractFfFailStderr) = bccli_contract_probe_run(
         $contractPsRoot,
         $contractModuleAutoload,
         FeatureFlagCommand::class,
-        array($contractFfAction, $contractFfName)
+        array('enable', $contractFfUnknownName, '-q')
     );
+    bccli_assert_same(1, $contractFfFailExit, 'FeatureFlagCommand: an unknown flag name under -q still exits 1');
+    bccli_assert($contractFfFailStderr !== '', 'FeatureFlagCommand: an unknown flag name under -q still writes to stderr (VERBOSITY_QUIET writeln is "always show")');
+    bccli_assert_same('', $contractFfFailStdout, 'FeatureFlagCommand: the unknown-flag failure writes nothing to stdout');
 
-    bccli_assert_same(
-        0,
-        $contractFfExit,
-        'FeatureFlagCommand: a real toggle at default verbosity (no -q, no -v) exits 0'
-            . ($contractFfExit !== 0 ? ' - stderr: ' . $contractFfStderr : '')
-    );
-    bccli_assert_same('', $contractFfStdout, 'FeatureFlagCommand: a successful toggle writes nothing to stdout at default verbosity');
-    bccli_assert_same('', $contractFfStderr, 'FeatureFlagCommand: a successful toggle writes nothing to stderr at default verbosity');
+} else {
+    echo "  SKIP: feature-flag output contracts require PrestaShop 8\n";
 }
-
-$contractFfUnknownName = 'bccli_test_contract_unknown_' . md5(uniqid('', true));
-list($contractFfFailExit, $contractFfFailStdout, $contractFfFailStderr) = bccli_contract_probe_run(
-    $contractPsRoot,
-    $contractModuleAutoload,
-    FeatureFlagCommand::class,
-    array('enable', $contractFfUnknownName, '-q')
-);
-bccli_assert_same(1, $contractFfFailExit, 'FeatureFlagCommand: an unknown flag name under -q still exits 1');
-bccli_assert($contractFfFailStderr !== '', 'FeatureFlagCommand: an unknown flag name under -q still writes to stderr (VERBOSITY_QUIET writeln is "always show")');
-bccli_assert_same('', $contractFfFailStdout, 'FeatureFlagCommand: the unknown-flag failure writes nothing to stdout');
 
 // === SearchIndexCommand ======================================================
 
 bccli_assert(
     (new SearchIndexCommand())->isEnabled(),
-    'SearchIndexCommand::isEnabled() returns true on PrestaShop 8 - core does not ship prestashop:search:index yet'
+    'SearchIndexCommand::isEnabled() returns true on the supported install - core does not ship prestashop:search:index yet'
 );
 
 // Same product lookup SearchIndexIntegrationTest.php already uses

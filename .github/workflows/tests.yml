@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        php: ['7.4', '8.0', '8.1']
+        php: ['7.1', '7.4', '8.0', '8.1']
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        prestashop: ['8.0', '8.1', '8.2']
+        prestashop: ['1.7.8', '8.0', '8.1', '8.2']
     services:
       mysql:
         image: mariadb:10.6
@@ -76,16 +76,18 @@ jobs:
           # give it a moment so the suite never races the tail of the install.
           sleep 15
           echo "PrestaShop is installed: $(docker exec ps php -r '
-            \$c = require "/var/www/html/app/config/parameters.php";
-            \$c = \$c["parameters"];
-            \$pdo = new PDO("mysql:host=" . \$c["database_host"] . ";dbname=" . \$c["database_name"], \$c["database_user"], \$c["database_password"]);
-            echo \$pdo->query("SELECT COUNT(*) FROM " . \$c["database_prefix"] . "image_type")->fetchColumn(), " image formats";
+            $c = require "/var/www/html/app/config/parameters.php";
+            $c = $c["parameters"];
+            $pdo = new PDO("mysql:host=" . $c["database_host"] . ";dbname=" . $c["database_name"], $c["database_user"], $c["database_password"]);
+            echo $pdo->query("SELECT COUNT(*) FROM " . $c["database_prefix"] . "image_type")->fetchColumn(), " image formats";
           ')"
 
       - name: Install the module and run the suite
         run: |
           set -euo pipefail
           docker cp . ps:/var/www/html/modules/bccli
+          docker exec ps php bin/console prestashop:module install bccli --env=prod --no-debug
+          docker exec ps php bin/console cache:clear --env=prod --no-debug
           docker exec ps php /var/www/html/modules/bccli/tests/run-integration.php
 
       - name: Container logs on failure

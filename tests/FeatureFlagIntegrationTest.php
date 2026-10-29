@@ -54,6 +54,12 @@ use Bccli\FeatureFlag\FeatureFlagManager;
 use Bccli\FeatureFlag\UnknownFeatureFlagException;
 use Bccli\FeatureFlag\UnsupportedPlatformException;
 
+if (version_compare(_PS_VERSION_, '8.0.0', '<')) {
+    echo "  SKIP: feature flags are unavailable on PrestaShop 1.7\n";
+
+    return;
+}
+
 // --- the platform guard passes on a real install ---------------------------
 $threw = false;
 try {

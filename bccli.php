@@ -28,10 +28,10 @@ class Bccli extends Module
     {
         $this->name = 'bccli';
         $this->tab = 'administration';
-        $this->version = '1.2.0';
+        $this->version = '1.3.0';
         $this->author = 'Mateusz Bartocha';
         $this->need_instance = 0;
-        $this->ps_versions_compliancy = array('min' => '8.0.0', 'max' => _PS_VERSION_);
+        $this->ps_versions_compliancy = array('min' => '1.7.8.0', 'max' => _PS_VERSION_);
         $this->bootstrap = true;
 
         parent::__construct();
