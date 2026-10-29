@@ -7,12 +7,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        php: ['7.1', '7.4', '8.0', '8.1']
+        php: ['7.1', '7.4', '8.0', '8.1', '8.3']
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
+      - name: PHP 7.1 syntax compatibility
+        if: matrix.php == '7.1'
+        run: |
+          set -euo pipefail
+          php -l bccli.php
+          find src -type f -name '*.php' -print0 | xargs -0 -n 1 php -l
       - run: php tests/run-unit.php
 
   integration:

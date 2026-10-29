@@ -47,9 +47,9 @@ php bin/console cache:clear --env=prod --no-debug
 
 ## Requirements
 
-PrestaShop 1.7.8.x or 8.x, with a PHP version supported by that PrestaShop
-release (PHP 7.1–7.4 for 1.7.8; PHP 7.2.5+ for 8.0, with the upper limit
-depending on the 8.x release). The 1.7 port was verified on PrestaShop 1.7.8.11
+PrestaShop 1.7.8 (tested on PrestaShop 1.7.8.11) or 8.x, with a PHP version
+supported by that PrestaShop release (PHP 7.1–7.4 for 1.7.8; PHP 7.2.5+ for 8.0,
+with the upper limit depending on the 8.x release). The 1.7 port was verified
 with PHP 7.4. It does not add PHP 8 support to PrestaShop 1.7 itself.
 
 For production scripts, append `--env=prod --no-debug` (or set
@@ -57,9 +57,11 @@ For production scripts, append `--env=prod --no-debug` (or set
 at `-v` its Symfony logger can print core deprecation notices on stderr even
 when regeneration succeeds.
 
-The CI matrix covers PrestaShop 1.7.8, 8.0, 8.1, and 8.2; later 8.x releases
-are expected to work but are unverified. Feature flags require PrestaShop 8;
-that command is not registered on 1.7. Not on the Addons marketplace.
+The test and release CI matrices cover PrestaShop 1.7.8, 8.0, 8.1, and 8.2;
+later 8.x releases are expected to work but are unverified. PrestaShop 1.7.8.11
+has feature-flag entities and a back office page, but lacks the
+`FeatureFlagRepository` API this command needs, so the command is not registered
+on 1.7. Not on the Addons marketplace.
 
 ## Commands
 
@@ -83,6 +85,12 @@ Use `--delete` after changing an image type's dimensions: core otherwise skips
 thumbnails that already exist. The ID selects a format, not a product; all
 product images are processed for that format.
 
+On PrestaShop 1.7.8.11, core deletes only the selected format's `.jpg` files.
+Unlike 8.x, it leaves `-<format>.webp`, `-<format>.avif`, and `2x` variants in
+place. Regenerate or remove those files separately after a size change; for
+example, a WebP tool that writes only missing files will otherwise keep serving
+the old dimensions. This module preserves that core deletion behaviour.
+
 ### Index products for search
 
 ```bash
@@ -103,7 +111,7 @@ group you named, so the command refuses rather than doing something surprising.
 
 ### Feature flags
 
-Available on PrestaShop 8 only, not on 1.7.
+This command is available on PrestaShop 8, not on 1.7.
 
 ```bash
 php bin/console prestashop:feature-flag list

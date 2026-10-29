@@ -11,7 +11,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - Feature-flag commands are unavailable on PrestaShop 1.7.
-- The CI matrix now includes PrestaShop 1.7.8 and PHP 7.1 unit tests.
+- Both test and release workflows now cover PrestaShop 1.7.8, with PHP 7.1
+  unit tests and full source syntax checks.
 
 ## [1.2.0] - 2026-08-06
 

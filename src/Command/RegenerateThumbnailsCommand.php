@@ -33,10 +33,10 @@ use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
- * Backports PrestaShop 9.1's prestashop:thumbnails:regenerate to 8.x.
+ * Backports PrestaShop 9.1's prestashop:thumbnails:regenerate to 1.7.8 and 8.x.
  *
  * The name deliberately matches core's so a crontab entry survives an upgrade
- * from 8 to 9 unchanged. Symfony does not reserve namespaces and silently lets
+ * from 1.7 or 8 to 9 unchanged. Symfony does not reserve namespaces and silently lets
  * the last registered command win a name collision, so isEnabled() withdraws
  * this command whenever core already provides it.
  *

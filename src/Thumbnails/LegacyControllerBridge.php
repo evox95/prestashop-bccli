@@ -40,6 +40,7 @@ namespace Bccli\Thumbnails;
  *  4. PS 1.7's bin/console boots the front-office context, with no employee.
  *     AdminController's constructor dereferences that employee. Supply an empty,
  *     unauthenticated Employee, never an existing administrator's identity.
+ *     This branch is a no-op on PS 8: ThemeManagerBuilder already sets one.
  *
  * Constructing the controller also runs core's own Controller::__construct(),
  * which sets Context::getContext()->controller = $this (classes/controller/
