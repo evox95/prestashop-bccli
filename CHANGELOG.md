@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-10-29
+
+### Added
+- PrestaShop 1.7.8 support for thumbnail regeneration and search indexing.
+- Integration coverage for regenerating one product image format after a size change.
+
+### Changed
+- Feature-flag commands are unavailable on PrestaShop 1.7.
+- Both test and release workflows now cover PrestaShop 1.7.8, with PHP 7.1
+  unit tests and full source syntax checks.
+
 ## [1.2.0] - 2026-08-06
 
 ### Changed

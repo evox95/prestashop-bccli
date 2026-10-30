@@ -36,6 +36,7 @@ if (!defined('_PS_ADMIN_DIR_')) {
 
 require_once $root . '/config/config.inc.php';
 require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/console-helper.php';
 
 // Every subprocess probe any *IntegrationTest.php file below spawns via
 // proc_open() constructs its own kernel with debug explicitly off, matching

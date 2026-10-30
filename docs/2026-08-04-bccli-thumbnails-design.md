@@ -293,7 +293,14 @@ it — so "no picture" placeholders are regenerated for every domain, not just
 products. An earlier draft of this spec got that wrong and would have left
 category, manufacturer, supplier and store placeholders stale.
 
-### No legacy context setup is needed
+### No legacy context setup is needed (PrestaShop 8)
+
+**2026-10-29 — PrestaShop 1.7 port:** The observations below apply to the
+original PrestaShop 8 implementation. On PrestaShop 1.7.8.11, `bin/console`
+leaves `Context::employee` null, and `AdminController` dereferences it during
+construction. The bridge now supplies a blank, unauthenticated `Employee` only
+when absent, never an administrator's identity. On PrestaShop 8 this branch is
+a no-op because `ThemeManagerBuilder` already supplies an employee.
 
 An earlier draft of this design had a step that built a `Context` (employee,
 shop, currency, controller) before running, mirroring what `fop_console` does.

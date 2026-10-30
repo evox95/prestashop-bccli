@@ -84,6 +84,11 @@ class ImageDomain
      */
     public static function constantFor($domain)
     {
+        // PS 1.7 uses the old name; PS 8 keeps it as a deprecated alias.
+        if ($domain === 'products' && !defined('_PS_PRODUCT_IMG_DIR_') && defined('_PS_PROD_IMG_DIR_')) {
+            return '_PS_PROD_IMG_DIR_';
+        }
+
         return self::$map[$domain][0];
     }
 

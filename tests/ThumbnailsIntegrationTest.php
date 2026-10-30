@@ -136,7 +136,7 @@ bccli_assert($source !== null, 'a category source image is available');
 
 // Core's no-picture step needs a per-language source: it looks for
 // "<iso>.jpg" in the domain directory and, failing that, falls back to
-// _PS_PRODUCT_IMG_DIR_ . "<default-iso>.jpg" (AdminImagesController.php:846-849).
+// the product directory + "<default-iso>.jpg" (AdminImagesController.php:846-849 on PS 8).
 // A freshly installed shop ships neither, so ImageManager::resize() fails and
 // core correctly reports "Cannot write No picture image". That is core
 // signalling missing fixture data, not a module defect - so provide the
@@ -144,7 +144,7 @@ bccli_assert($source !== null, 'a category source image is available');
 $noPictureFallback = null;
 $defaultIso = Language::getIsoById((int) Configuration::get('PS_LANG_DEFAULT'));
 if ($defaultIso) {
-    $fallbackPath = _PS_PRODUCT_IMG_DIR_ . $defaultIso . '.jpg';
+    $fallbackPath = $bridge->directoryFor('products') . $defaultIso . '.jpg';
     if (!file_exists($fallbackPath)) {
         $placeholder = imagecreatetruecolor(200, 200);
         imagefill($placeholder, 0, 0, imagecolorallocate($placeholder, 230, 230, 230));

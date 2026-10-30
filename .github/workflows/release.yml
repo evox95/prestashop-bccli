@@ -80,7 +80,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        php: ['7.4', '8.1', '8.3']
+        php: ['7.1', '7.4', '8.0', '8.1', '8.3']
     steps:
       - uses: actions/checkout@v4
 
@@ -90,6 +90,13 @@ jobs:
           php-version: ${{ matrix.php }}
           extensions: mbstring, json, gd
           tools: none
+
+      - name: PHP 7.1 syntax compatibility
+        if: matrix.php == '7.1'
+        run: |
+          set -euo pipefail
+          php -l bccli.php
+          find src vendor -type f -name '*.php' -print0 | xargs -0 -n 1 php -l
 
       - name: Unit tests
         run: php tests/run-unit.php
@@ -107,7 +114,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        prestashop: ['8.0', '8.1', '8.2']
+        prestashop: ['1.7.8', '8.0', '8.1', '8.2']
     services:
       mysql:
         image: mariadb:10.6
@@ -152,10 +159,12 @@ jobs:
           '
           sleep 15
 
-      - name: Run the integration suite
+      - name: Install the module and run the suite
         run: |
           set -euo pipefail
           docker cp . ps:/var/www/html/modules/bccli
+          docker exec ps php bin/console prestashop:module install bccli --env=prod --no-debug
+          docker exec ps php bin/console cache:clear --env=prod --no-debug
           docker exec ps php /var/www/html/modules/bccli/tests/run-integration.php
 
       - name: Container logs on failure

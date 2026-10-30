@@ -57,7 +57,7 @@ class FeatureFlagCommand extends Command
     const CORE_COMMAND = 'PrestaShopBundle\\Command\\FeatureFlagCommand';
 
     /**
-     * Withdraws this command when core ships its own.
+     * Withdraws this command when feature flags are absent or core ships its own.
      *
      * Checks for the class rather than comparing version strings, so it also
      * does the right thing if the command is ever backported into an 8.x patch.
@@ -66,7 +66,9 @@ class FeatureFlagCommand extends Command
      */
     public function isEnabled()
     {
-        return !class_exists(self::CORE_COMMAND);
+        return !class_exists(self::CORE_COMMAND)
+            && class_exists(FeatureFlagManager::ENTITY_CLASS)
+            && class_exists(FeatureFlagManager::REPOSITORY_SERVICE);
     }
 
     protected function configure()

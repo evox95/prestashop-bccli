@@ -12,8 +12,9 @@ versus actual behaviour.
 
 ## Supported versions
 
-Fixes are made against the latest `1.x` release, tested against PrestaShop
-8.0, 8.1 and 8.2 as listed in [`README.md`](README.md).
+Fixes are made against the latest `1.x` release. The CI matrices cover
+PrestaShop 1.7.8, 8.0, 8.1, and 8.2; the 1.7 port was locally tested on
+PrestaShop 1.7.8.11. See [`README.md`](README.md) for requirements and caveats.
 
 ## No support SLA
 
